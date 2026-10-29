@@ -19,6 +19,12 @@ classifiers = [
 ]
 dependencies = ["pyyaml>=6.0"]
 
+[project.urls]
+Homepage = "https://github.com/gchandra10/lakehouse-gc"
+Documentation = "https://github.com/gchandra10/lakehouse-gc/blob/main/docs/DETAILS.md"
+Changelog = "https://github.com/gchandra10/lakehouse-gc/releases"
+Security = "https://github.com/gchandra10/lakehouse-gc/security/policy"
+
 [dependency-groups]
 dev = [
     "mypy>=1.10",
