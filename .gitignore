@@ -1,15 +1,30 @@
+# Python / uv
 .venv/
 __pycache__/
 *.py[cod]
+*.egg-info/
+
+# Build output (wheels are built by CI and attached to GitHub Releases)
 dist/
 build/
-*.egg-info/
+
+# Tool caches and coverage
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+
+# Editors and OS
 .DS_Store
-VISION.md
-mynotes.txt
-CLAUDE.md
+.vscode/
+.idea/
 *.code-workspace
-uv.lock
+
+# Secrets
+.env
+
+# Private notes (not part of the package)
+VISION.md
+CLAUDE.md
+mynotes.txt

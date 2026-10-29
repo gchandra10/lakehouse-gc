@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from conftest import EXAMPLE_POLICY
+from conftest import EXAMPLE_POLICY, SAMPLE_POLICY
 from lakehouse_gc.core.config import build_scanner_config, resolve_scanner_configs
 from lakehouse_gc.core.errors import (
     PolicyError,
@@ -47,6 +47,15 @@ def test_example_policy_loads() -> None:
     assert policy.scoring.dimension_weights == {Dimension.GOVERNANCE: 0.5, Dimension.COST: 0.5}
     assert policy.actions.mode == "report_only"
     assert policy.source == str(EXAMPLE_POLICY)
+
+
+def test_editable_sample_policy_is_valid_and_runs() -> None:
+    from lakehouse_gc import run
+    from lakehouse_gc.core.results import RunResult
+
+    policy = load_policy(SAMPLE_POLICY)
+    assert policy.policy_version == 1
+    assert isinstance(run(config_path=str(SAMPLE_POLICY), scanners=["example"]), RunResult)
 
 
 def test_minimal_policy_uses_defaults() -> None:

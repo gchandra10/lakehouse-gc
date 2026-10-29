@@ -1,0 +1,59 @@
+# Checks every push and pull request: lint, types, tests, and a wheel install smoke test.
+# Also called by release.yml so a release can only be built from a passing commit.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Databricks Runtime 13.3/14.3 LTS use 3.10, 15.4 LTS uses 3.11, 16.x uses 3.12.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }} # overrides .python-version for every uv command
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (fails if uv.lock is out of date)
+        run: uv sync --locked
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Build wheel and sdist
+        run: uv build
+
+      - name: Smoke test the built wheel in a clean environment
+        run: |
+          uv venv --no-project /tmp/smoke
+          uv pip install --python /tmp/smoke dist/*.whl
+          cd /tmp
+          /tmp/smoke/bin/python -c "import lakehouse_gc; print('installed', lakehouse_gc.__version__)"

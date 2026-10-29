@@ -42,7 +42,7 @@ include = [
     "tests",
     "examples",
     "README.md",
-    "VISION.md",
+    "docs",
     "LICENSE",
     "NOTICE",
 ]

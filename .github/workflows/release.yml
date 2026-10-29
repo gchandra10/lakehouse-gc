@@ -1,0 +1,64 @@
+# Publishes a GitHub Release with the wheel and sdist when a version tag is pushed:
+#
+#   1. set __version__ in src/lakehouse_gc/__init__.py (e.g. "0.2.1") and commit
+#   2. git tag v0.2.1 && git push origin v0.2.1
+#
+# The tag must equal "v" + __version__. Versions with letters (0.3.0rc1) become pre-releases.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Build and publish
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Check that the tag matches the package version
+        id: version
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/lakehouse_gc/__init__.py)
+          tag="${GITHUB_REF_NAME}"
+          echo "package version: ${version}, tag: ${tag}"
+          if [ "v${version}" != "${tag}" ]; then
+            echo "::error::Tag ${tag} does not match __version__ ${version}. Tag v${version} instead."
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build wheel and sdist
+        run: uv build
+
+      - name: Write checksums
+        run: |
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          prerelease=""
+          if [[ "${VERSION}" =~ [a-z] ]]; then prerelease="--prerelease"; fi
+          gh release create "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz dist/SHA256SUMS.txt \
+            --title "lakehouse-gc ${VERSION}" \
+            --generate-notes \
+            --verify-tag \
+            ${prerelease}

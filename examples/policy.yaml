@@ -14,11 +14,11 @@ scope:
 
 # Excluded resources are not analyzed but stay visible as "excluded" findings.
 exclusions:
-  - resource_type: table          # must match a scanner's type: catalog, schema, table (uc)
-    pattern: "main.finance.*"     # case-insensitive glob on the full name
+  - resource_type: table    # must match a scanner's type: catalog, schema, table (uc)
+    pattern: "main.finance.*"  # case-insensitive glob on the full name
     reason: "Retention policy"
     expires_on: null
-  - resource_type: table          # internal tables backing materialized views
+  - resource_type: table     # internal tables backing materialized views
     pattern: "*.__materialization*"
     reason: "Internal tables"
     expires_on: null
@@ -33,7 +33,7 @@ exclusions:
   - resource_type: example_asset
     pattern: "tmp_*"
     reason: "Temporary hold during migration"
-    expires_on: 2025-01-01        # inclusive; expired exclusions are ignored with a warning
+    expires_on: 2026-10-30        # inclusive; expired exclusions are ignored with a warning
 
 rules:                            # one section per scanner; every key is optional
   uc:

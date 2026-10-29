@@ -25,7 +25,9 @@ from lakehouse_gc.core.scanner import RuleSpec, Scanner, ScannerContext
 from lakehouse_gc.scanners.example import ExampleScanner
 
 ROOT = Path(__file__).resolve().parent.parent
-EXAMPLE_POLICY = ROOT / "examples" / "policy.yaml"
+# Tests use a frozen copy so editing examples/policy.yaml never changes expected scores.
+EXAMPLE_POLICY = ROOT / "tests" / "fixtures" / "policy.yaml"
+SAMPLE_POLICY = ROOT / "examples" / "policy.yaml"
 FIXED_NOW = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
 
 
