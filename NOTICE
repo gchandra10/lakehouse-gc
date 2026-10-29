@@ -1,0 +1,10 @@
+Copyright (2026) Databricks, Inc.
+
+This Software includes software developed at Databricks (https://www.databricks.com/) and its use is subject to the included LICENSE file.
+
+This Software contains code from the following open source projects, licensed under the MIT License.
+
+PyYAML - https://github.com/yaml/pyyaml
+Copyright (c) 2017-2021 Ingy döt Net
+Copyright (c) 2006-2016 Kirill Simonov
+License - https://github.com/yaml/pyyaml/blob/main/LICENSE

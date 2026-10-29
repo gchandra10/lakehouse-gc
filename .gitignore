@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+VISION.md
+mynotes.txt
+CLAUDE.md
+*.code-workspace
+uv.lock
