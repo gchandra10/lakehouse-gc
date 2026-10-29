@@ -26,6 +26,10 @@ dev = [
     "types-PyYAML>=6.0",
 ]
 
+[tool.uv]
+# Same uv everywhere (laptop and CI) so uv.lock is written the same way.
+required-version = "~=0.13.6"
+
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
