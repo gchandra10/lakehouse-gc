@@ -23,6 +23,12 @@ jobs:
   security:
     name: Security audit
     uses: ./.github/workflows/security.yml
+    # A called workflow may not ask for more than the caller grants. security.yml's
+    # notify job needs issues: write, though it only runs on the weekly schedule and is
+    # skipped here.
+    permissions:
+      contents: read
+      issues: write
 
   release:
     name: Build and publish
