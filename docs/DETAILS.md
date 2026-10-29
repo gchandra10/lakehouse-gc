@@ -15,7 +15,7 @@
 
 ## Installation
 
-- **Requirements:** Python 3.10+ (Databricks Runtime 13.3 LTS or later). The only runtime
+- **Requirements:** Python 3.10–3.14 (tested; Databricks Runtime 13.3 LTS or later). The only runtime
   dependency is PyYAML. pyspark is used when present but is not a dependency.
 - **Get the wheel:** download `lakehouse_gc-<version>-py3-none-any.whl` from the
   project's GitHub Releases, or build it yourself with `uv build` (it is written to
@@ -270,7 +270,7 @@ Tests use a frozen policy in `tests/fixtures/policy.yaml`, so editing
 Wheels are built by GitHub Actions, never from a laptop and never committed to git.
 
 - **[`ci.yml`](../.github/workflows/ci.yml)** runs on every push to `main` and every pull
-  request. On Python 3.10–3.13 it runs ruff, mypy, and pytest, builds the wheel, and checks
+  request. On Python 3.10–3.14 it runs ruff, mypy, and pytest, builds the wheel, and checks
   that the wheel installs in a clean environment.
 - **[`release.yml`](../.github/workflows/release.yml)** runs when a `v*` tag is pushed. It
   runs CI, checks that the tag equals `v` + `__version__`, builds, and creates a GitHub

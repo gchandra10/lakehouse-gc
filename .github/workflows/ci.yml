@@ -23,8 +23,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Databricks Runtime 13.3/14.3 LTS use 3.10, 15.4 LTS uses 3.11, 16.x uses 3.12.
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # Supported range: 3.10 (Databricks Runtime 13.3 LTS) to 3.14. To support a newer
+        # Python, add it here and as a classifier in pyproject.toml.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     env:
       UV_PYTHON: ${{ matrix.python-version }} # overrides .python-version for every uv command
     steps:
