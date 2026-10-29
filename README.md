@@ -1,4 +1,4 @@
-# lakehouse-gc
+# Lakehouse Governance & Cost
 
 Report-only governance, cost, and hygiene assessment framework for Databricks lakehouses.
 Distribution name `lakehouse-gc`, import name `lakehouse_gc`. The Python package is the
