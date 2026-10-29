@@ -47,6 +47,7 @@ class ScannerResult:
     evaluations: tuple[ScoredEvaluation, ...] = ()
     findings: tuple[Finding, ...] = ()
     warnings: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
     error: ScannerError | None = None
 
 
@@ -64,6 +65,9 @@ class RunResult:
     warnings: tuple[str, ...]
     scores: ScoreReport
     savings: SavingsSummary
+    limitations: tuple[str, ...] = ()
+    """What couldn't be seen (missing access, columns, or detail) and which checks it made
+    unknown. See ``check_access`` for the sources behind them."""
 
     def scanner_result(self, name: str) -> ScannerResult:
         for result in self.scanner_results:
@@ -117,6 +121,12 @@ class RunResult:
             lines.append(f"  FAILED {error.scanner} during {error.phase.value}: {error.message}")
         for warning in self.warnings:
             lines.append(f"  Warning: {warning}")
+        if self.limitations:
+            lines.append("  Limitations (these checks are unknown, not passed):")
+            lines.extend(f"    - {item}" for item in self.limitations)
+            lines.append(
+                "    Run check_access(spark, POLICY_PATH) to see which sources are readable."
+            )
         if self.savings.total is None:
             lines.append("  Savings: unknown (no estimates available)")
         return "\n".join(lines)

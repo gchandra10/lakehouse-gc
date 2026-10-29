@@ -50,6 +50,7 @@ include = [
     "docs",
     "LICENSE",
     "NOTICE",
+    "SECURITY.md",
 ]
 
 [tool.pytest.ini_options]
@@ -72,4 +73,4 @@ files = ["src"]
 [tool.ruff.lint.per-file-ignores]
 # Databricks notebooks provide `spark`, `display`, and `dbutils` as globals, and import
 # per cell so each cell reads on its own.
-"examples/*.py" = ["F821", "E402"]
+"examples/*.ipynb" = ["F821", "E402"]

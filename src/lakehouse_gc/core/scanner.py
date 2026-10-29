@@ -28,6 +28,7 @@ from lakehouse_gc.core.models import (
     Severity,
 )
 from lakehouse_gc.core.policy import Policy
+from lakehouse_gc.core.sources import ResolvedSource, SourceGroupSpec, SourceSpec
 from lakehouse_gc.core.sql import SqlClient, default_sql_client
 
 
@@ -81,6 +82,9 @@ class ScannerContext:
     clock: Callable[[], datetime]
     sql: SqlClient | None = None
     warnings: list[str] = field(default_factory=list)
+    sources: Mapping[str, ResolvedSource] = field(default_factory=dict)
+    """This scanner's sources, resolved from the policy."""
+    limitations: list[str] = field(default_factory=list)
 
     def now(self) -> datetime:
         """Current timezone-aware UTC time from the run's clock."""
@@ -91,9 +95,16 @@ class ScannerContext:
         return self.sql if self.sql is not None else default_sql_client()
 
     def warn(self, message: str) -> None:
-        """Record a non-fatal limitation; it appears in ``RunResult.warnings``."""
+        """Record a configuration or environment warning (``RunResult.warnings``)."""
         self.warnings.append(message)
         self.logger.warning(message, extra={"event": "scanner.warning"})
+
+    def limit(self, message: str) -> None:
+        """Record something that couldn't be seen and which checks it affected
+        (``RunResult.limitations``)."""
+        if message not in self.limitations:
+            self.limitations.append(message)
+            self.logger.info(message, extra={"event": "scanner.limitation"})
 
 
 class Scanner(ABC):
@@ -105,6 +116,11 @@ class Scanner(ABC):
     config_model: ClassVar[type | None] = None
     resource_types: ClassVar[tuple[str, ...]] = ()
     """Resource types this scanner emits; used to flag policy exclusions that can't match."""
+    sources: ClassVar[tuple[SourceSpec, ...]] = ()
+    """Tables or views this scanner reads; repointable under ``sources:`` in the policy."""
+    source_groups: ClassVar[tuple[SourceGroupSpec, ...]] = ()
+    access_notes: ClassVar[tuple[str, ...]] = ()
+    """Extra access requirements that ``check_access`` can't probe up front."""
 
     @classmethod
     def rule_specs(cls) -> Mapping[str, RuleSpec]:

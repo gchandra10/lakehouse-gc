@@ -1,0 +1,86 @@
+# Audits every locked dependency for known vulnerabilities with pip-audit (maintained by the
+# Python Packaging Authority) against the OSV database, which aggregates the PyPA advisory
+# database and GitHub security advisories.
+#
+# Runs weekly, whenever dependencies change, on demand, and before every release
+# (release.yml calls it and refuses to publish if it fails). When the weekly run finds a
+# problem it opens, or comments on, a GitHub issue so a person can decide what to do.
+name: Security
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  push:
+    branches: [main]
+    paths: ["uv.lock", "pyproject.toml", ".github/workflows/security.yml"]
+  pull_request:
+    paths: ["uv.lock", "pyproject.toml", ".github/workflows/security.yml"]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  PIP_AUDIT: "pip-audit==2.10.1"
+
+jobs:
+  audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          version: "0.13.6" # keep in sync with [tool.uv] required-version in pyproject.toml
+          checksum: "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645" # linux x86_64
+
+      - name: Point uv.lock at public PyPI
+        run: .github/scripts/use-public-pypi.sh
+
+      - name: Export exact, hashed versions from uv.lock
+        run: |
+          uv export --frozen --format requirements-txt --no-emit-project --no-dev -q -o runtime.txt
+          uv export --frozen --format requirements-txt --no-emit-project --all-groups -q -o all.txt
+
+      - name: Audit
+        run: |
+          status=0
+          for scope in runtime all; do
+            label=$([ "$scope" = runtime ] && echo "Runtime dependencies (shipped with the wheel)" \
+              || echo "All locked dependencies (including dev tools)")
+            echo "### ${label}" >> "$GITHUB_STEP_SUMMARY"
+            if uvx --from "$PIP_AUDIT" pip-audit --requirement "${scope}.txt" --disable-pip \
+                --vulnerability-service osv --strict --desc on --format markdown \
+                --output "${scope}.md"; then
+              echo "✅ No known vulnerabilities." >> "$GITHUB_STEP_SUMMARY"
+            else
+              status=1
+              cat "${scope}.md" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          exit "$status"
+
+  notify:
+    name: Open an issue if the weekly audit fails
+    needs: audit
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create or update the security issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Weekly security audit failed"
+          body="The scheduled dependency audit failed on $(date -u +%Y-%m-%d). Details: ${RUN_URL}"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"${title}\"" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi

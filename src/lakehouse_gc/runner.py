@@ -37,6 +37,7 @@ from lakehouse_gc.core.results import RunResult, ScannerError, ScannerResult
 from lakehouse_gc.core.savings import summarize_savings
 from lakehouse_gc.core.scanner import Scanner, ScannerContext
 from lakehouse_gc.core.scoring import compute_scores
+from lakehouse_gc.core.sources import ResolvedSource, frozen, resolve_sources
 from lakehouse_gc.core.sql import SqlClient, as_sql_client
 
 Clock = Callable[[], datetime]
@@ -91,6 +92,7 @@ def run(
             clock=clock_fn,
             today=started_at.date(),
             sql=sql_client,
+            sources=prepared.sources.get(scanner_cls.name, {}),
         )
         for scanner_cls in scanner_classes
     )
@@ -133,6 +135,7 @@ def run(
             *(w for r in results for w in r.warnings),
             *_unmatched_exclusion_warnings(resolved_policy, prepared.registry, results),
         ),
+        limitations=tuple(item for r in results for item in r.limitations),
         scores=scores,
         savings=summarize_savings(findings),
     )
@@ -146,6 +149,7 @@ class PreparedRun:
     registry: ScannerRegistry
     scanner_classes: tuple[type[Scanner], ...]
     configs: Mapping[str, Any]
+    sources: Mapping[str, Mapping[str, ResolvedSource]]
 
 
 def prepare(
@@ -169,7 +173,14 @@ def prepare(
         resolved_policy.rules,
         {name: resolved_registry.get(name).config_model for name in resolved_registry.names()},
     )
-    return PreparedRun(resolved_policy, resolved_registry, scanner_classes, configs)
+    sources = resolve_sources(
+        resolved_policy.sources,
+        (
+            (name, resolved_registry.get(name).sources, resolved_registry.get(name).source_groups)
+            for name in resolved_registry.names()
+        ),
+    )
+    return PreparedRun(resolved_policy, resolved_registry, scanner_classes, configs, sources)
 
 
 def _unmatched_exclusion_warnings(
@@ -234,11 +245,13 @@ def _run_scanner(
     clock: Clock,
     today: date,
     sql: SqlClient | None,
+    sources: Mapping[str, ResolvedSource],
 ) -> ScannerResult:
     name = scanner_cls.name
     log_extra = {"run_id": run_id, "scanner": name}
     started_at = _now(clock)
     warnings: list[str] = []
+    limitations: list[str] = []
     phase = Phase.INITIALIZE
     _logger.info("Scanner started", extra={**log_extra, "event": "scanner.started"})
     try:
@@ -252,6 +265,8 @@ def _run_scanner(
             clock=lambda: _now(clock),
             sql=sql,
             warnings=warnings,
+            sources=frozen(sources),
+            limitations=limitations,
         )
         specs = scanner_cls.rule_specs()
 
@@ -289,6 +304,7 @@ def _run_scanner(
             started_at=started_at,
             finished_at=_now(clock),
             warnings=tuple(warnings),
+            limitations=tuple(limitations),
             error=ScannerError(
                 scanner=name, phase=phase, error_type=type(exc).__name__, message=str(exc)
             ),
@@ -321,6 +337,7 @@ def _run_scanner(
         evaluations=tuple(sorted(scored, key=lambda s: s.evaluation.key)),
         findings=all_findings,
         warnings=tuple(warnings),
+        limitations=tuple(limitations),
     )
 
 

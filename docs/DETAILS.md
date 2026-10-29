@@ -2,6 +2,7 @@
 
 - [Installation](#installation)
 - [Safety guarantees](#safety-guarantees)
+- [Data sources and restricted access](#data-sources-and-restricted-access)
 - [Unity Catalog scanner (`uc`)](#unity-catalog-scanner-uc)
 - [Policy reference](#policy-reference)
 - [Scoring](#scoring)
@@ -28,17 +29,18 @@
   The `uc` scanner needs Spark; without it, `uc` fails on its own with a clear message
   while the other scanners still run.
 
-Ready-made notebooks (Databricks notebook source format):
+Ready-made notebooks (`.ipynb`, saved without outputs), from easy to advanced: see
+[Examples](EXAMPLES.md). Start with
+[`examples/01_easy_quickstart.ipynb`](../examples/01_easy_quickstart.ipynb).
 
-- [`examples/custom_scanner.py`](../examples/custom_scanner.py): the minimal Unity
-  Catalog scan.
-- [`examples/all_options.py`](../examples/all_options.py): every option (see
-  [Examples](EXAMPLES.md)).
+**Recommended first run:** `check_access(spark, POLICY_PATH)` (what can I read?), then
+`rules_dataframe(...)` (what will be checked?), then `run(...)`.
 
 ## Safety guarantees
 
 - **Report-only.** The package cannot change resources. It has no SDK or network
-  dependencies, and `uc` only runs `SELECT` and `DESCRIBE DETAIL`. A policy with
+  dependencies, and `uc` and `check_access` only run `SELECT`, `SHOW CATALOGS`, and
+  `DESCRIBE DETAIL`. A policy with
   `actions.mode` other than `report_only`, or with `allow_delete` or `allow_pause` set to
   anything but `false`, is rejected.
 - **Recommendations are advisory.** `archive_candidate`, `pause_candidate`, and
@@ -48,10 +50,69 @@ Ready-made notebooks (Databricks notebook source format):
   Unavailable evidence carries no value, missing confidence is `None`, and missing savings
   are `None`, never zero.
 
+## Data sources and restricted access
+
+Organizations differ in what end users may read. Some block the `system` catalog, and some
+publish curated views in their own schemas instead. The tool adapts in three ways.
+
+**1. Check first.** `check_access(spark, POLICY_PATH, scanners=["uc"])` probes every source
+for its column names only (`SELECT * ... LIMIT 0` returns no rows). It reports each one:
+
+| Status | Meaning |
+|---|---|
+| `available` | Readable, with all expected columns |
+| `partial` | Readable, but some optional columns are missing; only the checks that need them become unknown |
+| `unavailable` | Not readable, or a required column is missing; essential sources stop the scanner |
+| `unverified` | Couldn't be probed (e.g. `per_catalog` with no visible catalog in scope) |
+
+Each row also shows `impact` (the checks affected) and `how_to_fix`. Use
+`report.summary()`, `report.to_dataframe(spark)`, `report.to_rows()`, or
+`report.can_run("uc")`.
+
+**2. Point the scanner at what you can read** under `sources:` in `policy.yaml`:
+
+```yaml
+sources:
+  information_schema: system.information_schema  # default
+  # information_schema: per_catalog              # each catalog's own information_schema
+  # information_schema: governance.uc_meta       # a schema of your org's views, same shape
+  tables:  # repoint a single view and map renamed columns
+    table: governance.uc_meta.all_tables
+    columns: {table_owner: owner_principal}  # logical name: your column name
+```
+
+- `per_catalog` lists catalogs with `SHOW CATALOGS` and reads
+  `<catalog>.information_schema.<view>` for each catalog in scope.
+- A single source can be a plain name (`tables: org.meta.tables`) or a mapping with
+  `table` and/or `columns`.
+- Names are validated: unknown sources or columns fail before scanning, with "did you
+  mean" hints.
+
+**3. Missing data is reported, never guessed.** After a run, `result.limitations` (also
+shown in `summary()`) lists what couldn't be seen and which checks became unknown.
+Unknown checks count against the score through `unknown_penalty`; they are never treated
+as passing.
+
+`uc` sources and their columns. Required columns are in **bold**; the other columns are
+optional, and the rule in brackets becomes unknown without them.
+
+| Source | Default object | Columns | If unavailable |
+|---|---|---|---|
+| `catalogs` | `system.information_schema.catalogs` | **catalog_name**, catalog_owner [owner_missing], comment [comment_missing], created, last_altered | `uc` cannot run |
+| `schemata` | `system.information_schema.schemata` | **catalog_name**, **schema_name**, schema_owner [owner_missing], comment [comment_missing], created, last_altered | `uc` cannot run |
+| `tables` | `system.information_schema.tables` | **table_catalog**, **table_schema**, **table_name**, table_type [stale_table], table_owner [owner_missing], comment [comment_missing], created, last_altered [stale_table], data_source_format | `uc` cannot run |
+| `table_tags` | `system.information_schema.table_tags` | **catalog_name**, **schema_name**, **table_name**, **tag_name**, tag_value | required_tags_missing unknown |
+| `volumes` | `system.information_schema.volumes` | **volume_catalog**, **volume_schema**, **volume_name** | empty_container unknown |
+
+`DESCRIBE DETAIL` runs per stale-table candidate and can't be probed up front. Its
+failures appear in `limitations`.
+
 ## Unity Catalog scanner (`uc`)
 
-The scanner reads `system.information_schema` (`catalogs`, `schemata`, `tables`,
-`table_tags`, `volumes`). For stale-table candidates only, it also runs `DESCRIBE DETAIL`.
+The scanner reads Unity Catalog `information_schema` views (`catalogs`, `schemata`,
+`tables`, `table_tags`, `volumes`), from `system.information_schema` by default or wherever
+`sources:` points (see [above](#data-sources-and-restricted-access)). For stale-table
+candidates only, it also runs `DESCRIBE DETAIL`.
 It skips `information_schema` schemas. Its resource types are `catalog`, `schema`, and
 `table`.
 
@@ -87,8 +148,8 @@ How evidence limits are reported:
   inferred and get `review`.
 - **Unreadable data is unknown.** If tags or volumes can't be read, or `DESCRIBE DETAIL`
   fails or hits the limit, the check is `indeterminate`. It counts as partially failed
-  (`unknown_penalty`) and is listed in `warnings`. If catalogs, schemas, or tables can't be
-  listed, `uc` fails and other scanners still run.
+  (`unknown_penalty`) and is listed in `limitations`. If catalogs, schemas, or tables can't
+  be listed, `uc` fails with the reason, and other scanners still run.
 - **Naming is a heuristic,** so temporary-looking names are inferred evidence.
 
 ## Policy reference
@@ -192,11 +253,13 @@ src/lakehouse_gc/
     savings.py    savings summary (no double counting)
     results.py    ScannerResult, RunResult (summary, to_rows, to_dataframe)
     sql.py        read-only SqlClient protocol and Spark adapter
+    sources.py    configurable sources, column probing, source reader
     log.py        structured logging helpers
   scanners/
     example.py    mock-data demo scanner
     uc.py         Unity Catalog scanner
   simple.py       check / define_scanner (function-based scanners)
+  access.py       check_access
   rules.py        describe_rules, rules_dataframe, rules_text
   runner.py       run()
 ```
@@ -272,10 +335,26 @@ Wheels are built by GitHub Actions, never from a laptop and never committed to g
 - **[`ci.yml`](../.github/workflows/ci.yml)** runs on every push to `main` and every pull
   request. On Python 3.10–3.14 it runs ruff, mypy, and pytest, builds the wheel, and checks
   that the wheel installs in a clean environment.
+- **[`security.yml`](../.github/workflows/security.yml)** runs
+  [`pip-audit`](https://github.com/pypa/pip-audit) (Python Packaging Authority) on the exact,
+  hashed versions in `uv.lock`, against the [OSV](https://osv.dev) database. It runs weekly
+  (Mondays), whenever `uv.lock` or `pyproject.toml` changes, and on demand. It audits the
+  runtime dependencies (shipped with the wheel) and all dev tools. If the weekly run fails,
+  it opens, or comments on, a **"Weekly security audit failed"** issue, so you can decide
+  whether to upgrade, wait for a fix, or accept the risk.
 - **[`release.yml`](../.github/workflows/release.yml)** runs when a `v*` tag is pushed. It
-  runs CI, checks that the tag equals `v` + `__version__`, builds, and creates a GitHub
-  Release. The release includes the wheel, the sdist, and `SHA256SUMS.txt`. Versions with
-  letters (e.g. `0.3.0rc1`) become pre-releases.
+  runs CI **and** the security audit, checks that the tag equals `v` + `__version__`,
+  builds, and creates a GitHub Release with the wheel, the sdist, `SHA256SUMS.txt`, a
+  CycloneDX SBOM, and a signed build provenance attestation. Versions with letters (e.g.
+  `0.3.0rc1`) become pre-releases. Nothing is published if any check fails.
+- **[`use-public-pypi.sh`](../.github/scripts/use-public-pypi.sh)** points `uv.lock` at
+  public PyPI on GitHub runners, for locks generated behind a corporate PyPI mirror. The
+  hashes still verify every file.
+
+**One-time repository settings** (Settings → Code security): enable *Private vulnerability
+reporting* (used by [SECURITY.md](../SECURITY.md)), *Dependabot alerts*, and *Secret
+scanning*. Optionally enable *Code scanning → CodeQL default setup*, which needs no
+workflow file.
 
 To release:
 

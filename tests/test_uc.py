@@ -108,8 +108,51 @@ def sample_workspace() -> dict[str, Any]:
     }
 
 
+VIEW_COLUMNS = {
+    "catalogs": ("catalog_name", "catalog_owner", "comment", "created", "last_altered"),
+    "schemata": (
+        "catalog_name",
+        "schema_name",
+        "schema_owner",
+        "comment",
+        "created",
+        "last_altered",
+    ),
+    "tables": (
+        "table_catalog",
+        "table_schema",
+        "table_name",
+        "table_type",
+        "table_owner",
+        "comment",
+        "created",
+        "last_altered",
+        "data_source_format",
+    ),
+    "table_tags": ("catalog_name", "schema_name", "table_name", "tag_name", "tag_value"),
+    "volumes": ("volume_catalog", "volume_schema", "volume_name"),
+}
+_CATALOG_KEY = {
+    "catalogs": "catalog_name",
+    "schemata": "catalog_name",
+    "tables": "table_catalog",
+    "table_tags": "catalog_name",
+    "volumes": "volume_catalog",
+}
+_IDENT = re.compile(r"`((?:[^`]|``)*)`")
+
+
+def _object(text: str) -> str:
+    return ".".join(part.replace("``", "`") for part in _IDENT.findall(text))
+
+
 class FakeUC:
-    """Routes the scanner's read-only statements to in-memory rows."""
+    """Emulates Unity Catalog metadata views for the scanner's read-only statements.
+
+    ``fail`` may contain view kinds (``tables``), object-name prefixes (``system.``), or
+    ``current_metastore`` / ``SHOW CATALOGS``. ``data["views"]`` defines custom views:
+    ``{object: {"kind": "tables", "rename": {default: actual}, "drop": [default, ...]}}``.
+    """
 
     def __init__(self, data: dict[str, Any], fail: set[str] | None = None) -> None:
         self.data = data
@@ -117,29 +160,88 @@ class FakeUC:
         self.statements: list[str] = []
         self.params: list[dict[str, Any]] = []
 
+    # -- object model --
+    def _view(self, object_name: str) -> tuple[str, dict[str, str], set[str]]:
+        custom = self.data.get("views", {}).get(object_name)
+        if custom:
+            return custom["kind"], dict(custom.get("rename", {})), set(custom.get("drop", ()))
+        parts = object_name.split(".")
+        catalogs = {c["catalog_name"] for c in self.data["catalogs"]}
+        if (
+            len(parts) == 3
+            and parts[1] == "information_schema"
+            and parts[2] in VIEW_COLUMNS
+            and (parts[0] == "system" or parts[0] in catalogs)
+        ):
+            return parts[2], {}, set()
+        raise RuntimeError(f"TABLE_OR_VIEW_NOT_FOUND: {object_name}")
+
+    def _check_fail(self, object_name: str, kind: str | None = None) -> None:
+        for rule in self.fail:
+            if rule in (object_name, kind) or object_name.startswith(rule):
+                raise RuntimeError(f"PERMISSION_DENIED on {object_name}")
+
+    def columns(self, object_name: str) -> list[str]:
+        self.statements.append(f"SELECT * FROM {object_name} LIMIT 0")
+        self.params.append({})
+        kind, rename, drop = self._view(object_name)
+        self._check_fail(object_name, kind)
+        return [rename.get(c, c) for c in VIEW_COLUMNS[kind] if c not in drop]
+
+    def _rows(self, kind: str, catalog: str | None) -> list[dict[str, Any]]:
+        if kind == "catalogs":
+            rows = list(self.data["catalogs"])
+            return [r for r in rows if catalog is None or r["catalog_name"] == catalog]
+        key = _CATALOG_KEY[kind]
+        source = self.data[kind]
+        catalogs = [catalog] if catalog else list(source)
+        return [{**row, key: name} for name in catalogs for row in source.get(name, [])]
+
+    # -- SqlClient --
     def query(
         self, statement: str, params: Mapping[str, Any] | None = None
     ) -> list[dict[str, Any]]:
         self.statements.append(statement)
         self.params.append(dict(params or {}))
-        catalog = (params or {}).get("catalog")
-        for key in ("current_metastore", "catalogs", "schemata", "table_tags", "tables", "volumes"):
-            if key in statement and key in self.fail:
-                raise RuntimeError(f"PERMISSION_DENIED on {key}")
         if "current_metastore" in statement:
+            self._check_fail("current_metastore")
             return [{"metastore_id": "ms-1"}]
-        if "information_schema.catalogs" in statement:
-            return list(self.data["catalogs"])
-        for key in ("schemata", "table_tags", "tables", "volumes"):
-            if f"information_schema.{key}" in statement:
-                return list(self.data[key].get(catalog, []))
+        if statement == "SHOW CATALOGS":
+            self._check_fail("SHOW CATALOGS")
+            return [{"catalog": c["catalog_name"]} for c in self.data["catalogs"]]
         if statement.startswith("DESCRIBE DETAIL"):
-            name = ".".join(re.findall(r"`((?:[^`]|``)*)`", statement)).replace("``", "`")
+            name = _object(statement)
             if name in self.data["detail_errors"]:
                 raise RuntimeError("DELTA_TABLE_NOT_FOUND")
             detail = self.data["details"].get(name)
             return [detail] if detail else []
-        raise AssertionError(f"unexpected statement: {statement}")
+        match = re.fullmatch(r"SELECT (.+?) FROM ((?:`(?:[^`]|``)*`\.?)+)(?: WHERE .*)?", statement)
+        if not match:
+            raise AssertionError(f"unexpected statement: {statement}")
+        object_name = _object(match.group(2))
+        kind, rename, drop = self._view(object_name)
+        self._check_fail(object_name, kind)
+        inverse = {actual: default for default, actual in rename.items()}
+        projection = []
+        for item in match.group(1).split(", "):
+            source, alias = item.split(" AS ")
+            projection.append((None if source == "NULL" else _object(source), alias))
+        rows = []
+        for row in self._rows(kind, (params or {}).get("catalog")):
+            out = {}
+            for actual, alias in projection:
+                default = inverse.get(actual, actual) if actual else None
+                if actual is not None and (
+                    default in drop or actual not in self.columns_of(kind, rename, drop)
+                ):
+                    raise RuntimeError(f"UNRESOLVED_COLUMN: {actual}")
+                out[alias] = None if default is None else row.get(default)
+            rows.append(out)
+        return rows
+
+    @staticmethod
+    def columns_of(kind: str, rename: dict[str, str], drop: set[str]) -> set[str]:
+        return {rename.get(c, c) for c in VIEW_COLUMNS[kind] if c not in drop}
 
 
 class _Row(dict[str, Any]):
@@ -148,14 +250,18 @@ class _Row(dict[str, Any]):
 
 
 class FakeSpark:
-    """Just enough of SparkSession: sql(...).collect() and createDataFrame(...)."""
+    """Just enough of SparkSession: sql(...).collect() / .columns and createDataFrame(...)."""
 
     def __init__(self, data: dict[str, Any], fail: set[str] | None = None) -> None:
         self.client = FakeUC(data, fail)
 
     def sql(self, statement: str, args: dict[str, Any] | None = None) -> Any:
+        probe = re.fullmatch(r"SELECT \* FROM (.+) LIMIT 0", statement)
+        if probe:
+            columns = self.client.columns(_object(probe.group(1)))
+            return SimpleNamespace(collect=list, columns=columns)
         rows = self.client.query(statement, args)
-        return SimpleNamespace(collect=lambda: [_Row(r) for r in rows])
+        return SimpleNamespace(collect=lambda: [_Row(r) for r in rows], columns=[])
 
     def createDataFrame(self, rows: list[tuple[Any, ...]], schema: str) -> Any:
         return SimpleNamespace(rows=rows, schema=schema)
@@ -330,7 +436,7 @@ def test_naive_spark_timestamps_are_treated_as_utc() -> None:
 # --- missing data and failures -------------------------------------------------------------
 
 
-def test_unreadable_tags_and_volumes_become_unknown_with_warnings() -> None:
+def test_unreadable_tags_and_volumes_become_unknown_with_limitations() -> None:
     result, _ = _scan(spark=FakeSpark(sample_workspace(), fail={"table_tags", "volumes"}))
     assert result.status is RunStatus.SUCCEEDED
     findings = _findings(result)
@@ -338,16 +444,20 @@ def test_unreadable_tags_and_volumes_become_unknown_with_warnings() -> None:
     assert tags.recommendation is Recommendation.REVIEW and tags.confidence == 0
     default = findings[("main.default", "uc.empty_container")]
     assert default.recommendation is Recommendation.REVIEW and default.confidence == 0
-    assert any("table tags" in w for w in result.warnings)
-    assert any("volumes" in w for w in result.warnings)
+    assert any(
+        "Table tags" in item and "uc.required_tags_missing" in item for item in result.limitations
+    )
+    assert any("Volumes" in item and "uc.empty_container" in item for item in result.limitations)
+    assert not result.warnings
+    assert "Limitations (these checks are unknown, not passed)" in result.summary()
     assert result.scores.governance.coverage is not None
     assert result.scores.governance.coverage < 1
 
 
-def test_metastore_lookup_failure_is_a_warning() -> None:
+def test_metastore_lookup_failure_is_a_limitation() -> None:
     result, _ = _scan(spark=FakeSpark(sample_workspace(), fail={"current_metastore"}))
     assert {r.ref.scope_id for r in result.scanner_result("uc").resources} == {"unknown"}
-    assert any("metastore" in w for w in result.warnings)
+    assert any("metastore" in item for item in result.limitations)
 
 
 def test_catalog_listing_failure_fails_scanner_in_isolation() -> None:

@@ -18,6 +18,7 @@ from lakehouse_gc.core.errors import (
     UnknownScannerError,
 )
 from lakehouse_gc.core.scanner import RuleSpec, Scanner
+from lakehouse_gc.core.sources import SourceGroupSpec, SourceSpec
 
 SCANNER_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -44,6 +45,7 @@ class ScannerRegistry:
         _validate_rules(name, scanner_cls.rules)
         validate_config_model(scanner_cls.config_model, name)
         _validate_rule_settings(name, scanner_cls)
+        _validate_sources(name, scanner_cls, self._scanners.values())
         existing = self._scanners.get(name)
         if existing is not None:
             raise DuplicateScannerError(
@@ -130,6 +132,47 @@ def _validate_rule_settings(name: str, scanner_cls: type[Scanner]) -> None:
     types = scanner_cls.resource_types
     if not isinstance(types, tuple) or not all(isinstance(t, str) and t for t in types):
         raise InvalidScannerError(f"scanner '{name}': resource_types must be a tuple of str")
+
+
+def _validate_sources(
+    name: str, scanner_cls: type[Scanner], others: Iterable[type[Scanner]]
+) -> None:
+    specs = scanner_cls.sources
+    groups = scanner_cls.source_groups
+    if not isinstance(specs, tuple) or not all(isinstance(s, SourceSpec) for s in specs):
+        raise InvalidScannerError(f"scanner '{name}': sources must be a tuple of SourceSpec")
+    if not isinstance(groups, tuple) or not all(isinstance(g, SourceGroupSpec) for g in groups):
+        raise InvalidScannerError(
+            f"scanner '{name}': source_groups must be a tuple of SourceGroupSpec"
+        )
+    group_names = {g.name for g in groups}
+    seen: set[str] = set()
+    for spec in specs:
+        if spec.name in seen or spec.name in group_names:
+            raise InvalidScannerError(f"scanner '{name}': duplicate source name '{spec.name}'")
+        seen.add(spec.name)
+        if (spec.group is None) == (spec.default is None):
+            raise InvalidScannerError(
+                f"scanner '{name}': source '{spec.name}' needs either group+view or default"
+            )
+        if spec.group is not None and (spec.group not in group_names or not spec.view):
+            raise InvalidScannerError(
+                f"scanner '{name}': source '{spec.name}' references unknown group "
+                f"'{spec.group}' or has no view"
+            )
+    mine_by_name: dict[str, SourceSpec | SourceGroupSpec] = {s.name: s for s in specs}
+    mine_by_name.update({g.name: g for g in groups})
+    for other in others:
+        theirs_all: tuple[SourceSpec | SourceGroupSpec, ...] = (
+            *other.sources,
+            *other.source_groups,
+        )
+        for theirs in theirs_all:
+            mine = mine_by_name.get(theirs.name)
+            if mine is not None and theirs != mine:
+                raise InvalidScannerError(
+                    f"scanner '{name}': source '{mine.name}' conflicts with scanner '{other.name}'"
+                )
 
 
 _default_registry: ScannerRegistry | None = None

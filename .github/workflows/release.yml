@@ -4,6 +4,8 @@
 #   2. git tag v0.2.1 && git push origin v0.2.1
 #
 # The tag must equal "v" + __version__. Versions with letters (0.3.0rc1) become pre-releases.
+# Nothing is published unless CI and the security audit both pass. Each release carries the
+# wheel, sdist, SHA256SUMS.txt, a CycloneDX SBOM, and a signed build provenance attestation.
 name: Release
 
 on:
@@ -18,12 +20,18 @@ jobs:
     name: CI
     uses: ./.github/workflows/ci.yml
 
+  security:
+    name: Security audit
+    uses: ./.github/workflows/security.yml
+
   release:
     name: Build and publish
-    needs: ci
+    needs: [ci, security]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the GitHub Release
+      id-token: write # sign the build provenance attestation
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -53,6 +61,23 @@ jobs:
           sha256sum *.whl *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Write SBOM (CycloneDX) of the runtime dependencies
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          .github/scripts/use-public-pypi.sh
+          uv export --frozen --format requirements-txt --no-emit-project --no-dev -q -o runtime.txt
+          uvx --from "pip-audit==2.10.1" pip-audit --requirement runtime.txt --disable-pip \
+            --vulnerability-service osv --format cyclonedx-json \
+            --output "dist/lakehouse_gc-${VERSION}.sbom.cdx.json"
+
+      - name: Attest build provenance (verify with `gh attestation verify`)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,6 +86,7 @@ jobs:
           prerelease=""
           if [[ "${VERSION}" =~ [a-z] ]]; then prerelease="--prerelease"; fi
           gh release create "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz dist/SHA256SUMS.txt \
+            dist/*.sbom.cdx.json \
             --title "lakehouse-gc ${VERSION}" \
             --generate-notes \
             --verify-tag \

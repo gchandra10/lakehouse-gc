@@ -1,15 +1,21 @@
 """Unity Catalog scanner: catalogs, schemas, and tables selected by the policy ``scope``.
 
-Read-only. It runs SELECT queries on ``system.information_schema`` and ``DESCRIBE DETAIL`` for
-stale-table candidates, through the run's SQL client (the notebook's Spark session by
-default). It never modifies anything.
+Read-only. It runs SELECT queries on Unity Catalog ``information_schema`` views and, for
+stale-table candidates, ``DESCRIBE DETAIL``, through the run's SQL client (the notebook's
+Spark session by default). It never modifies anything.
+
+Where it reads from is configurable under ``sources:`` in the policy. The default is
+``system.information_schema``. ``per_catalog`` reads each catalog's own
+``information_schema`` (for organizations that block the ``system`` catalog), and single
+views can be repointed or have their columns renamed.
 
 Evidence limits, reported explicitly instead of hidden:
 - Only objects the running principal can see are visible, so "empty" is inferred.
-- ``information_schema.tables.last_altered`` tracks metadata changes, and ``lastModified``
-  from ``DESCRIBE DETAIL`` tracks data writes. Neither is a read or access time, so
-  staleness is inferred. Confidence stays below the candidate gate and results in REVIEW.
-- If tags or volumes can't be read, the affected rules are INDETERMINATE.
+- ``last_altered`` tracks metadata changes and ``lastModified`` from ``DESCRIBE DETAIL``
+  tracks data writes. Neither is a read or access time, so staleness is inferred.
+  Confidence stays below the candidate gate and results in REVIEW.
+- Unreadable sources or missing columns make only the affected checks unknown, and they
+  are listed in ``RunResult.limitations``.
 """
 
 from __future__ import annotations
@@ -34,35 +40,118 @@ from lakehouse_gc.core.models import (
     Severity,
 )
 from lakehouse_gc.core.scanner import RuleSpec, Scanner, ScannerContext
+from lakehouse_gc.core.sources import (
+    ResolvedSource,
+    SourceColumn,
+    SourceGroupSpec,
+    SourceReader,
+    SourceRows,
+    SourceSpec,
+    SourceUnavailableError,
+    describe_error,
+)
 from lakehouse_gc.core.sql import Row, SqlClient, quote_identifier
 
-SOURCE = "system.information_schema"
 DETAIL_SOURCE = "DESCRIBE DETAIL"
+NAME_SOURCE = "object name"
 BYTES_PER_GB = 1024**3
 DATA_TABLE_TYPES = frozenset({"MANAGED", "EXTERNAL"})
 SKIPPED_SCHEMAS = frozenset({"information_schema"})
-
-CATALOGS_SQL = (
-    "SELECT catalog_name, catalog_owner, comment, created, last_altered "
-    "FROM system.information_schema.catalogs"
-)
-SCHEMATA_SQL = (
-    "SELECT schema_name, schema_owner, comment, created, last_altered "
-    "FROM system.information_schema.schemata WHERE catalog_name = :catalog"
-)
-TABLES_SQL = (
-    "SELECT table_schema, table_name, table_type, table_owner, comment, created, last_altered, "
-    "data_source_format FROM system.information_schema.tables WHERE table_catalog = :catalog"
-)
-TAGS_SQL = (
-    "SELECT schema_name, table_name, tag_name, tag_value "
-    "FROM system.information_schema.table_tags WHERE catalog_name = :catalog"
-)
-VOLUMES_SQL = (
-    "SELECT volume_schema, volume_name "
-    "FROM system.information_schema.volumes WHERE volume_catalog = :catalog"
-)
 METASTORE_SQL = "SELECT current_metastore() AS metastore_id"
+SHOW_CATALOGS_SQL = "SHOW CATALOGS"
+
+_OWNER, _COMMENT, _TAGS = "uc.owner_missing", "uc.comment_missing", "uc.required_tags_missing"
+_EMPTY, _STALE = "uc.empty_container", "uc.stale_table"
+
+INFORMATION_SCHEMA = SourceGroupSpec(
+    "information_schema",
+    default="system.information_schema",
+    description=(
+        "Unity Catalog metadata views. Use per_catalog to read each catalog's own "
+        "information_schema when the system catalog is not available."
+    ),
+    allow_per_catalog=True,
+)
+
+
+def _col(name: str, *used_by: str, required: bool = False) -> SourceColumn:
+    return SourceColumn(name, required=required, used_by=used_by)
+
+
+CATALOGS_SOURCE = SourceSpec(
+    "catalogs",
+    "Catalog list with owner and comment",
+    (
+        _col("catalog_name", required=True),
+        _col("catalog_owner", _OWNER),
+        _col("comment", _COMMENT),
+        _col("created"),
+        _col("last_altered"),
+    ),
+    group="information_schema",
+    view="catalogs",
+    essential=True,
+)
+SCHEMATA_SOURCE = SourceSpec(
+    "schemata",
+    "Schemas with owner and comment",
+    (
+        _col("catalog_name", required=True),
+        _col("schema_name", required=True),
+        _col("schema_owner", _OWNER),
+        _col("comment", _COMMENT),
+        _col("created"),
+        _col("last_altered"),
+    ),
+    group="information_schema",
+    view="schemata",
+    essential=True,
+)
+TABLES_SOURCE = SourceSpec(
+    "tables",
+    "Tables and views with owner, comment, type, and change times",
+    (
+        _col("table_catalog", required=True),
+        _col("table_schema", required=True),
+        _col("table_name", required=True),
+        _col("table_type", _STALE),
+        _col("table_owner", _OWNER),
+        _col("comment", _COMMENT),
+        _col("created"),
+        _col("last_altered", _STALE),
+        _col("data_source_format"),
+    ),
+    group="information_schema",
+    view="tables",
+    essential=True,
+)
+TABLE_TAGS_SOURCE = SourceSpec(
+    "table_tags",
+    "Tags on tables",
+    (
+        _col("catalog_name", required=True),
+        _col("schema_name", required=True),
+        _col("table_name", required=True),
+        _col("tag_name", required=True),
+        _col("tag_value"),
+    ),
+    group="information_schema",
+    view="table_tags",
+    used_by=(_TAGS,),
+)
+VOLUMES_SOURCE = SourceSpec(
+    "volumes",
+    "Volumes, counted when deciding whether a schema is empty",
+    (
+        _col("volume_catalog", required=True),
+        _col("volume_schema", required=True),
+        _col("volume_name", required=True),
+    ),
+    group="information_schema",
+    view="volumes",
+    used_by=(_EMPTY,),
+)
+UC_SOURCES = (CATALOGS_SOURCE, SCHEMATA_SOURCE, TABLES_SOURCE, TABLE_TAGS_SOURCE, VOLUMES_SOURCE)
 
 DEFAULT_TEMP_PATTERNS = (
     "tmp_*",
@@ -182,39 +271,63 @@ class UnityCatalogScanner(Scanner):
     rules = (OWNER_RULE, COMMENT_RULE, TAGS_RULE, TEMP_RULE, EMPTY_RULE, STALE_RULE)
     config_model = UCConfig
     resource_types = ("catalog", "schema", "table")
+    sources = UC_SOURCES
+    source_groups = (INFORMATION_SCHEMA,)
+    access_notes = (
+        "stale-table checks also run DESCRIBE DETAIL on candidate tables; failures are "
+        "listed as limitations after a run.",
+    )
 
     # --- discover ------------------------------------------------------------------------
 
     def discover(self, ctx: ScannerContext) -> Sequence[Resource]:
-        sql = ctx.get_sql()
+        reader = SourceReader(ctx.get_sql())
+        plan = _plan(ctx)
         scope = ctx.policy.scope
-        metastore = _metastore_id(sql, ctx)
+        metastore = _metastore_id(reader.sql, ctx)
         resources: list[Resource] = []
-        catalogs = [
-            row for row in sql.query(CATALOGS_SQL) if scope.includes_catalog(row["catalog_name"])
-        ]
-        for catalog_row in sorted(catalogs, key=lambda row: str(row["catalog_name"])):
-            resources.extend(self._discover_catalog(ctx, sql, metastore, catalog_row))
+        for catalog_row in _list_catalogs(ctx, reader, plan["catalogs"]):
+            if scope.includes_catalog(str(catalog_row["catalog_name"])):
+                resources.extend(self._discover_catalog(ctx, reader, plan, metastore, catalog_row))
         return resources
 
     def _discover_catalog(
-        self, ctx: ScannerContext, sql: SqlClient, metastore: str, catalog_row: Row
+        self,
+        ctx: ScannerContext,
+        reader: SourceReader,
+        plan: Mapping[str, ResolvedSource],
+        metastore: str,
+        catalog_row: Row,
     ) -> list[Resource]:
         scope = ctx.policy.scope
         catalog = str(catalog_row["catalog_name"])
         params = {"catalog": catalog}
-        schemata = [
-            row
-            for row in sql.query(SCHEMATA_SQL, params)
-            if row["schema_name"] not in SKIPPED_SCHEMAS
-        ]
-        tables = [
-            row
-            for row in sql.query(TABLES_SQL, params)
-            if row["table_schema"] not in SKIPPED_SCHEMAS
-        ]
-        tags = _optional_query(sql, TAGS_SQL, params, ctx, f"table tags in catalog '{catalog}'")
-        volumes = _optional_query(sql, VOLUMES_SQL, params, ctx, f"volumes in catalog '{catalog}'")
+        schemata_read = reader.read(
+            plan["schemata"], catalog=catalog, where={"catalog_name": "catalog"}, params=params
+        )
+        tables_read = reader.read(
+            plan["tables"], catalog=catalog, where={"table_catalog": "catalog"}, params=params
+        )
+        _note_missing_columns(ctx, plan["schemata"], schemata_read)
+        _note_missing_columns(ctx, plan["tables"], tables_read)
+        schemata = [r for r in schemata_read.rows if r["schema_name"] not in SKIPPED_SCHEMAS]
+        tables = [r for r in tables_read.rows if r["table_schema"] not in SKIPPED_SCHEMAS]
+        tags = _read_optional(
+            ctx,
+            reader,
+            plan["table_tags"],
+            catalog,
+            {"catalog_name": "catalog"},
+            f"Table tags in catalog '{catalog}'",
+        )
+        volumes = _read_optional(
+            ctx,
+            reader,
+            plan["volumes"],
+            catalog,
+            {"volume_catalog": "catalog"},
+            f"Volumes in catalog '{catalog}'",
+        )
 
         table_counts: dict[str, int] = defaultdict(int)
         for row in tables:
@@ -222,12 +335,12 @@ class UnityCatalogScanner(Scanner):
         volume_counts: dict[str, int] | None = None
         if volumes is not None:
             volume_counts = defaultdict(int)
-            for row in volumes:
+            for row in volumes.rows:
                 volume_counts[row["volume_schema"]] += 1
         tags_by_table: dict[tuple[str, str], dict[str, str]] | None = None
         if tags is not None:
             tags_by_table = defaultdict(dict)
-            for row in tags:
+            for row in tags.rows:
                 key = (row["schema_name"], row["table_name"])
                 tags_by_table[key][str(row["tag_name"])] = str(row["tag_value"] or "")
 
@@ -243,6 +356,7 @@ class UnityCatalogScanner(Scanner):
         catalog_count: int | None = sum(known)
         if not catalog_count and len(known) < len(schema_counts):
             catalog_count = None
+        volume_source = volumes.object_name if volumes else plan["volumes"].display_name
 
         resources = [
             _resource(
@@ -250,8 +364,10 @@ class UnityCatalogScanner(Scanner):
                 "catalog",
                 catalog,
                 catalog_row,
+                source=str(catalog_row.get("__source__") or plan["catalogs"].display_name),
+                missing=frozenset(catalog_row.get("__missing__") or ()),
                 owner_key="catalog_owner",
-                extra=(_count_evidence(catalog_count),),
+                extra=(_count_evidence(catalog_count, volume_source),),
                 metadata={"catalog": catalog},
             )
         ]
@@ -265,8 +381,10 @@ class UnityCatalogScanner(Scanner):
                     "schema",
                     f"{catalog}.{schema}",
                     row,
+                    source=schemata_read.object_name,
+                    missing=frozenset(schemata_read.missing_columns),
                     owner_key="schema_owner",
-                    extra=(_count_evidence(schema_counts[schema]),),
+                    extra=(_count_evidence(schema_counts[schema], volume_source),),
                     metadata={"catalog": catalog, "schema": schema},
                 )
             )
@@ -274,11 +392,16 @@ class UnityCatalogScanner(Scanner):
             schema, table = str(row["table_schema"]), str(row["table_name"])
             if not scope.includes_table(catalog, schema, table):
                 continue
-            if tags_by_table is None:
-                tag_evidence = Evidence("tags", _U, SOURCE, note="Table tags could not be read.")
+            if tags_by_table is None or tags is None:
+                tag_evidence = Evidence(
+                    "tags",
+                    _U,
+                    plan["table_tags"].display_name,
+                    note="Table tags could not be read.",
+                )
             else:
                 tag_evidence = Evidence(
-                    "tags", _O, SOURCE, value=dict(tags_by_table.get((schema, table), {}))
+                    "tags", _O, tags.object_name, value=dict(tags_by_table.get((schema, table), {}))
                 )
             resources.append(
                 _resource(
@@ -286,6 +409,8 @@ class UnityCatalogScanner(Scanner):
                     "table",
                     f"{catalog}.{schema}.{table}",
                     row,
+                    source=tables_read.object_name,
+                    missing=frozenset(tables_read.missing_columns),
                     owner_key="table_owner",
                     extra=(tag_evidence,),
                     metadata={
@@ -293,6 +418,7 @@ class UnityCatalogScanner(Scanner):
                         "schema": schema,
                         "table": table,
                         "table_type": str(row.get("table_type") or ""),
+                        "table_type_known": "table_type" not in tables_read.missing_columns,
                         "data_source_format": str(row.get("data_source_format") or ""),
                     },
                 )
@@ -307,6 +433,7 @@ class UnityCatalogScanner(Scanner):
         config: UCConfig = ctx.config
         now = ctx.now()
         detail_budget = [config.max_detail_queries]
+        detail_stats = {"skipped": 0, "failed": 0}
         evaluations: list[RuleEvaluation] = []
         for resource in resources:
             kind = resource.ref.resource_type
@@ -320,8 +447,22 @@ class UnityCatalogScanner(Scanner):
             if kind == "table":
                 if config.required_tags:
                     evaluations.append(_evaluate_tags(resource, config.required_tags))
-                if resource.metadata.get("table_type") in DATA_TABLE_TYPES:
-                    evaluations.append(_evaluate_stale(ctx, resource, config, now, detail_budget))
+                type_known = resource.metadata.get("table_type_known", True)
+                if not type_known or resource.metadata.get("table_type") in DATA_TABLE_TYPES:
+                    evaluations.append(
+                        _evaluate_stale(ctx, resource, config, now, detail_budget, detail_stats)
+                    )
+        if detail_stats["skipped"]:
+            ctx.limit(
+                f"{detail_stats['skipped']} stale-table candidate(s) were not checked because "
+                f"max_detail_queries ({config.max_detail_queries}) was reached: "
+                f"{_STALE} is unknown for them."
+            )
+        if detail_stats["failed"]:
+            ctx.limit(
+                f"DESCRIBE DETAIL failed for {detail_stats['failed']} table(s) (for example, "
+                f"non-Delta tables or missing privileges): {_STALE} is unknown for them."
+            )
         return evaluations
 
     def score(
@@ -372,26 +513,95 @@ class UnityCatalogScanner(Scanner):
 # --- helpers -----------------------------------------------------------------------------
 
 
+def _plan(ctx: ScannerContext) -> Mapping[str, ResolvedSource]:
+    """This run's resolved sources, or the defaults when the scanner runs standalone."""
+    if ctx.sources:
+        return ctx.sources
+    from lakehouse_gc.core.sources import resolve_sources
+
+    return resolve_sources({}, [("uc", UC_SOURCES, (INFORMATION_SCHEMA,))])["uc"]
+
+
 def _metastore_id(sql: SqlClient, ctx: ScannerContext) -> str:
     try:
         rows = sql.query(METASTORE_SQL)
         value = rows[0]["metastore_id"] if rows else None
     except Exception as exc:
-        ctx.warn(f"Could not read the metastore ID ({type(exc).__name__}); using 'unknown'.")
+        ctx.limit(
+            f"The metastore ID could not be read ({describe_error(exc)}); resource IDs use "
+            "'unknown' as their scope."
+        )
         return "unknown"
     return str(value) if value else "unknown"
 
 
-def _optional_query(
-    sql: SqlClient, statement: str, params: Mapping[str, Any], ctx: ScannerContext, what: str
-) -> list[Row] | None:
+def _list_catalogs(ctx: ScannerContext, reader: SourceReader, source: ResolvedSource) -> list[Row]:
+    """Catalog rows, sorted by name. Per-catalog mode lists names with SHOW CATALOGS and
+    then reads each catalog's own ``information_schema.catalogs`` for owner and comment."""
+    if not source.per_catalog:
+        result = reader.read(source)
+        _note_missing_columns(ctx, source, result)
+        rows = [{**row, "__source__": result.object_name} for row in result.rows]
+        return sorted(rows, key=lambda row: str(row["catalog_name"]))
+
     try:
-        return sql.query(statement, params)
+        listed = reader.sql.query(SHOW_CATALOGS_SQL)
     except Exception as exc:
-        ctx.warn(
-            f"Could not read {what} ({type(exc).__name__}: {exc}); related checks are unknown."
+        raise SourceUnavailableError("catalogs", SHOW_CATALOGS_SQL, describe_error(exc)) from exc
+    names = sorted({str(row.get("catalog") or next(iter(row.values()), "")) for row in listed})
+    catalog_rows: list[Row] = []
+    for name in (n for n in names if n and ctx.policy.scope.includes_catalog(n)):
+        try:
+            result = reader.read(
+                source, catalog=name, where={"catalog_name": "catalog"}, params={"catalog": name}
+            )
+        except SourceUnavailableError as exc:
+            ctx.limit(
+                f"Catalog details for '{name}' could not be read ({exc.object_name}: "
+                f"{exc.reason}): {_OWNER} and {_COMMENT} are unknown for that catalog."
+            )
+            catalog_rows.append(
+                {
+                    "catalog_name": name,
+                    "__source__": SHOW_CATALOGS_SQL,
+                    "__missing__": ("catalog_owner", "comment", "created", "last_altered"),
+                }
+            )
+            continue
+        _note_missing_columns(ctx, source, result)
+        match = next((r for r in result.rows if r["catalog_name"] == name), {"catalog_name": name})
+        catalog_rows.append(
+            {**match, "__source__": result.object_name, "__missing__": result.missing_columns}
         )
+    return catalog_rows
+
+
+def _read_optional(
+    ctx: ScannerContext,
+    reader: SourceReader,
+    source: ResolvedSource,
+    catalog: str,
+    where: Mapping[str, str],
+    what: str,
+) -> SourceRows | None:
+    try:
+        result = reader.read(source, catalog=catalog, where=where, params={"catalog": catalog})
+    except SourceUnavailableError as exc:
+        rules = ", ".join(source.spec.used_by)
+        ctx.limit(f"{what} could not be read ({exc.object_name}: {exc.reason}): {rules} unknown.")
         return None
+    _note_missing_columns(ctx, source, result)
+    return result
+
+
+def _note_missing_columns(ctx: ScannerContext, source: ResolvedSource, result: SourceRows) -> None:
+    for column in result.missing_columns:
+        uses = source.spec.column(column).used_by
+        if uses:
+            ctx.limit(
+                f"{result.object_name} has no '{source.actual(column)}' column: "
+                f"{', '.join(uses)} unknown where it is needed."
+            )
 
 
 def _timestamp(value: object) -> datetime | None:
@@ -417,46 +627,55 @@ def _resource(
     name: str,
     row: Row,
     *,
+    source: str,
+    missing: frozenset[str],
     owner_key: str,
     extra: tuple[Evidence, ...],
     metadata: dict[str, Any],
 ) -> Resource:
-    owner = row.get(owner_key)
-    owner = owner if isinstance(owner, str) and owner.strip() else None
-    comment = row.get("comment")
-    comment = comment if isinstance(comment, str) and comment.strip() else None
-    last_altered = _iso(row.get("last_altered"))
+    def text(key: str) -> Evidence:
+        label = "owner" if key == owner_key else key
+        if key in missing:
+            return Evidence(label, _U, source, note=f"Column not available in {source}.")
+        value = row.get(key)
+        value = value if isinstance(value, str) and value.strip() else None
+        return Evidence(label, _O, source, value=value)
+
+    def time(key: str, note: str) -> Evidence:
+        value = None if key in missing else _iso(row.get(key))
+        if value is None:
+            return Evidence(key, _U, source, note=f"{note} Not reported.")
+        return Evidence(key, _O, source, value=value, note=note)
+
+    owner = text(owner_key)
     evidence = (
-        Evidence("owner", _O, SOURCE, value=owner),
-        Evidence("comment", _O, SOURCE, value=comment),
-        Evidence("created", _O, SOURCE, value=_iso(row.get("created")))
-        if _iso(row.get("created"))
-        else Evidence("created", _U, SOURCE),
-        Evidence("last_altered", _O, SOURCE, value=last_altered, note="Metadata change time.")
-        if last_altered
-        else Evidence("last_altered", _U, SOURCE, note="Metadata change time not reported."),
+        owner,
+        text("comment"),
+        time("created", "Creation time."),
+        time("last_altered", "Metadata change time."),
         *extra,
     )
+    owner_name = owner.value if isinstance(owner.value, str) else None
     return Resource(
         ref=ResourceRef(metastore, kind, name),
         name=name,
-        owner=owner,
+        owner=owner_name,
         metadata=metadata,
         evidence=evidence,
     )
 
 
-def _count_evidence(count: int | None) -> Evidence:
+def _count_evidence(count: int | None, source: str) -> Evidence:
     if count is None:
         return Evidence(
-            "visible_objects", _U, SOURCE, note="Volumes could not be read; count unknown."
+            "visible_objects", _U, source, note="Volumes could not be read; count unknown."
         )
     if count > 0:
-        return Evidence("visible_objects", _O, SOURCE, value=count)
+        return Evidence("visible_objects", _O, source, value=count)
     return Evidence(
         "visible_objects",
         _I,
-        SOURCE,
+        source,
         value=0,
         note="Counts only tables and volumes visible to the running principal.",
     )
@@ -470,6 +689,14 @@ def _required(resource: Resource, key: str) -> Evidence:
 
 def _evaluate_owner(resource: Resource) -> RuleEvaluation:
     evidence = _required(resource, "owner")
+    if evidence.status is _U:
+        return RuleEvaluation(
+            resource.ref,
+            OWNER_RULE.rule_id,
+            Outcome.INDETERMINATE,
+            (evidence,),
+            ("Owner is not available from the configured source.",),
+        )
     if evidence.value:
         return RuleEvaluation(
             resource.ref,
@@ -486,6 +713,14 @@ def _evaluate_owner(resource: Resource) -> RuleEvaluation:
 def _evaluate_comment(resource: Resource) -> RuleEvaluation:
     evidence = _required(resource, "comment")
     kind = resource.ref.resource_type
+    if evidence.status is _U:
+        return RuleEvaluation(
+            resource.ref,
+            COMMENT_RULE.rule_id,
+            Outcome.INDETERMINATE,
+            (evidence,),
+            ("Comment is not available from the configured source.",),
+        )
     if evidence.value:
         return RuleEvaluation(
             resource.ref, COMMENT_RULE.rule_id, Outcome.PASS, (evidence,), ("Has a description.",)
@@ -503,12 +738,12 @@ def _evaluate_temp_name(resource: Resource, patterns: tuple[str, ...]) -> RuleEv
     short_name = resource.name.rsplit(".", 1)[-1].lower()
     matched = next((p for p in patterns if fnmatchcase(short_name, p.lower())), None)
     if matched is None:
-        evidence = Evidence("name", _O, SOURCE, value=resource.name)
+        evidence = Evidence("name", _O, NAME_SOURCE, value=resource.name)
         return RuleEvaluation(
             resource.ref, TEMP_RULE.rule_id, Outcome.PASS, (evidence,), ("Name looks permanent.",)
         )
     evidence = Evidence(
-        "name", _I, SOURCE, value=resource.name, note="Naming is a heuristic signal only."
+        "name", _I, NAME_SOURCE, value=resource.name, note="Naming is a heuristic signal only."
     )
     return RuleEvaluation(
         resource.ref,
@@ -581,6 +816,7 @@ def _evaluate_stale(
     config: UCConfig,
     now: datetime,
     detail_budget: list[int],
+    detail_stats: dict[str, int],
 ) -> RuleEvaluation:
     rule_id = STALE_RULE.rule_id
     cutoff = now - timedelta(days=config.stale_table_days)
@@ -596,6 +832,7 @@ def _evaluate_stale(
         )
 
     if detail_budget[0] <= 0:
+        detail_stats["skipped"] += 1
         unavailable = Evidence(
             "last_modified",
             _U,
@@ -616,6 +853,7 @@ def _evaluate_stale(
         detail = rows[0] if rows else {}
     except Exception as exc:
         detail = {}
+        detail_stats["failed"] += 1
         reason = f"DESCRIBE DETAIL failed ({type(exc).__name__})."
     else:
         reason = "DESCRIBE DETAIL returned no modification time."

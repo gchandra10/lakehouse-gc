@@ -35,6 +35,18 @@ exclusions:
     reason: "Temporary hold during migration"
     expires_on: 2026-10-30        # inclusive; expired exclusions are ignored with a warning
 
+# Where scanners read from. Leave this out to use the system tables. Run
+# check_access(spark, POLICY_PATH) to see what you can read.
+sources:
+  information_schema: system.information_schema   # or: per_catalog (each catalog's own
+                                                  #   information_schema), or a schema of
+                                                  #   your organization's views, e.g.
+                                                  #   governance.uc_meta
+  # Repoint a single view, and map renamed columns (logical name: your column):
+  # tables:
+  #   table: governance.uc_meta.all_tables
+  #   columns: {table_owner: owner_principal}
+
 rules:                            # one section per scanner; every key is optional
   uc:
     stale_table_days: 180         # no data written for this long -> stale

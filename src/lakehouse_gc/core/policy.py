@@ -266,6 +266,8 @@ class Policy:
     scope: Scope = field(default_factory=Scope)
     exclusions: tuple[Exclusion, ...] = ()
     rules: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    sources: Mapping[str, Any] = field(default_factory=dict)
+    """Where scanners read from; validated against declared sources at run time."""
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     actions: ActionsConfig = field(default_factory=ActionsConfig)
     source: str | None = None
@@ -292,6 +294,9 @@ class Policy:
                 raise PolicyValidationError(f"rules.{name}", "must be a mapping")
             rules[name] = MappingProxyType(dict(section))
         object.__setattr__(self, "rules", MappingProxyType(rules))
+        if not isinstance(self.sources, Mapping):
+            raise PolicyValidationError("sources", "must be a mapping")
+        object.__setattr__(self, "sources", MappingProxyType(dict(self.sources)))
 
 
 # --- YAML loading -----------------------------------------------------------------------
@@ -344,7 +349,9 @@ def loads_policy(text: str, source: str = "<string>") -> Policy:
     return policy_from_mapping(data, source=source)
 
 
-_TOP_KEYS = frozenset({"policy_version", "scope", "exclusions", "rules", "scoring", "actions"})
+_TOP_KEYS = frozenset(
+    {"policy_version", "scope", "exclusions", "rules", "sources", "scoring", "actions"}
+)
 _SCOPE_KEYS = frozenset(_SCOPE_PARTS)
 _EXCLUSION_KEYS = frozenset({"resource_type", "pattern", "reason", "expires_on"})
 _SCORING_KEYS = frozenset(
@@ -368,6 +375,7 @@ def policy_from_mapping(data: Any, source: str | None = None) -> Policy:
         scope=_parse_scope(root.get("scope"), "scope"),
         exclusions=_parse_exclusions(root.get("exclusions"), "exclusions"),
         rules=_parse_rules(root.get("rules"), "rules"),
+        sources=_optional_mapping(root.get("sources"), "sources"),
         scoring=_parse_scoring(root.get("scoring"), "scoring"),
         actions=_parse_actions(root.get("actions"), "actions"),
         source=source,

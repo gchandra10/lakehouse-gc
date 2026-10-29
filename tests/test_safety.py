@@ -57,4 +57,4 @@ def test_json_formatter_includes_extra_fields() -> None:
 
 
 def test_version_exposed() -> None:
-    assert lakehouse_gc.__version__ == "0.2.1"
+    assert lakehouse_gc.__version__ == "0.2.2"

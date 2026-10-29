@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -388,51 +390,57 @@ def test_dimension_impacts_from_rule_spec() -> None:
     assert result.scores.overall == 100.0
 
 
-# --- Databricks notebook example ---------------------------------------------------------
+# --- example notebooks --------------------------------------------------------------------
+
+EXAMPLES = sorted((ROOT / "examples").glob("[0-9][0-9]_*.ipynb"))
 
 
-def test_notebook_example_runs_with_policy_yaml() -> None:
+def _notebook(path: Path) -> dict[str, Any]:
+    import json
+
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_examples_are_numbered_by_level() -> None:
+    names = [p.stem for p in EXAMPLES]
+    assert len(names) == 8
+    levels = [name.split("_")[1] for name in names]
+    assert levels == sorted(levels, key=["easy", "intermediate", "advanced"].index)
+    assert not list((ROOT / "examples").glob("*.py"))  # notebooks only, one copy
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.stem)
+def test_example_notebook_is_clean(path: Path) -> None:
+    nb = _notebook(path)
+    assert nb["nbformat"] == 4
+    first = nb["cells"][0]
+    assert first["cell_type"] == "markdown"
+    assert "".join(first["source"]).startswith(f"# {path.stem[:2]} · ")
+    for cell in nb["cells"]:
+        if cell["cell_type"] == "code":  # never commit outputs: they could leak workspace data
+            assert cell["outputs"] == [] and cell["execution_count"] is None, path.name
+    pip = [c for c in nb["cells"] if "".join(c["source"]).startswith("%pip install")]
+    assert len(pip) == 1 and "lakehouse_gc-0.2.2-py3-none-any.whl" in "".join(pip[0]["source"])
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.stem)
+def test_example_notebook_runs_end_to_end(path: Path) -> None:
     from test_uc import FakeSpark, sample_workspace
 
-    source = (ROOT / "examples" / "custom_scanner.py").read_text(encoding="utf-8")
-    source = source.replace("/Volumes/main/default/lakehouse_gc/policy.yaml", str(EXAMPLE_POLICY))
+    code = "\n".join(
+        "".join(line for line in cell["source"] if not line.lstrip().startswith("%"))
+        for cell in _notebook(path)["cells"]
+        if cell["cell_type"] == "code"
+    )
+    code = code.replace("/Volumes/main/default/lakehouse_gc/policy.yaml", str(EXAMPLE_POLICY))
     spark = FakeSpark(sample_workspace())
     shown: list[object] = []
     namespace = {"spark": spark, "display": shown.append, "__name__": "__main__"}
-    exec(compile(source, "custom_scanner.py", "exec"), namespace)
-    result = namespace["result"]
-    assert result.status is RunStatus.SUCCEEDED
-    assert result.scanners == ("uc",)
-    assert len(shown) == 2  # rules table, then findings
-    assert shown[0].schema.startswith("scanner STRING, rule STRING")
-    assert shown[1].rows
-    assert all(
-        q.lstrip().upper().startswith(("SELECT", "DESCRIBE")) for q in spark.client.statements
-    )
+    exec(compile(code, path.name, "exec"), namespace)
 
-
-def test_all_options_example_runs_end_to_end() -> None:
-    from test_uc import FakeSpark, sample_workspace
-
-    source = (ROOT / "examples" / "all_options.py").read_text(encoding="utf-8")
-    source = source.replace("/Volumes/main/default/lakehouse_gc/policy.yaml", str(EXAMPLE_POLICY))
-    shown: list[object] = []
-    namespace = {
-        "spark": FakeSpark(sample_workspace()),
-        "display": shown.append,
-        "__name__": "__main__",
-    }
-    exec(compile(source, "all_options.py", "exec"), namespace)
-
-    assert namespace["result"].status is RunStatus.SUCCEEDED
-    combined = namespace["combined"]
-    assert combined.status is RunStatus.SUCCEEDED
-    assert combined.scanners == ("jobs_demo", "tags", "uc")
-    findings = {(f.resource.resource_id, f.rule_id): f for f in combined.findings}
-    stale = findings[("main.tmp.scratch", "tags.recently_used")]
-    assert stale.recommendation is Recommendation.REVIEW  # inferred -> gated
-    assert stale.downgraded_from is Recommendation.ARCHIVE_CANDIDATE
-    assert findings[("job-2", "jobs_demo.idle")].confidence == 0
-    assert namespace["in_code"].status is RunStatus.SUCCEEDED
-    assert namespace["with_registry"].status is RunStatus.SUCCEEDED
-    assert len(shown) == 3  # rules table, findings table, combined rules table
+    for value in namespace.values():
+        if isinstance(value, RunResult):
+            assert value.status is RunStatus.SUCCEEDED, (path.name, value.summary())
+    statements = spark.client.statements
+    assert statements
+    assert all(s.startswith(("SELECT", "DESCRIBE", "SHOW CATALOGS")) for s in statements)

@@ -37,16 +37,8 @@ jobs:
           checksum: "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645" # linux x86_64
           enable-cache: true
 
-      # uv.lock may be generated behind a PyPI mirror (e.g. a corporate proxy) that GitHub
-      # runners cannot reach. Mirrors serve the same files, so point the URLs at public
-      # PyPI; the hashes in the lock still verify every download.
       - name: Point uv.lock at public PyPI
-        run: |
-          perl -pi -e 's#https://[a-z0-9.-]*pypi-proxy[a-z0-9.-]*/simple/#https://pypi.org/simple#g; s#https://[a-z0-9.-]*pypi-proxy[a-z0-9.-]*/packages/#https://files.pythonhosted.org/packages/#g' uv.lock
-          if grep -q pypi-proxy uv.lock; then
-            echo "::error::uv.lock still references a proxy after rewriting"
-            exit 1
-          fi
+        run: .github/scripts/use-public-pypi.sh
 
       - name: Install dependencies (fails if uv.lock is out of date)
         run: uv sync --locked

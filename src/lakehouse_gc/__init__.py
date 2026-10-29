@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import logging
 
+from lakehouse_gc.access import check_access
 from lakehouse_gc.rules import describe_rules, rules_dataframe, rules_text
 from lakehouse_gc.runner import run
 from lakehouse_gc.simple import check, define_scanner, fail, ok, unknown
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 logging.getLogger("lakehouse_gc").addHandler(logging.NullHandler())
 
 __all__ = [
     "__version__",
     "check",
+    "check_access",
     "define_scanner",
     "describe_rules",
     "fail",

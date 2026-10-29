@@ -35,6 +35,11 @@ class SparkSqlClient:
         )
         return [row.asDict(recursive=True) for row in frame.collect()]
 
+    def columns(self, object_name: str) -> list[str]:
+        """Column names of a table or view, without reading any rows."""
+        statement = f"SELECT * FROM {quote_identifier(*object_name.split('.'))} LIMIT 0"
+        return list(self._spark.sql(statement).columns)
+
 
 def as_sql_client(value: Any) -> SqlClient:
     """Accept a ``SqlClient`` or a SparkSession-like object (anything with ``.sql``)."""
@@ -65,3 +70,19 @@ def default_sql_client() -> SqlClient:
 def quote_identifier(*parts: str) -> str:
     """Backtick-quote a multi-part name, escaping embedded backticks."""
     return ".".join("`" + part.replace("`", "``") + "`" for part in parts)
+
+
+def table_columns(client: SqlClient, object_name: str) -> list[str]:
+    """Column names of ``object_name``. Uses the client's ``columns()`` when it has one,
+    otherwise ``DESCRIBE TABLE``. Raises if the object can't be read."""
+    columns = getattr(client, "columns", None)
+    if callable(columns):
+        return list(columns(object_name))
+    rows = client.query(f"DESCRIBE TABLE {quote_identifier(*object_name.split('.'))}")
+    names = []
+    for row in rows:
+        name = str(row.get("col_name") or "").strip()
+        if not name or name.startswith("#"):
+            break
+        names.append(name)
+    return names

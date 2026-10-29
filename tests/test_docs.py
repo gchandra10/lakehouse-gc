@@ -34,3 +34,29 @@ def test_relative_links_resolve(doc: Path) -> None:
 
 def test_readme_has_no_notebook_magics() -> None:
     assert "%pip" not in (ROOT / "README.md").read_text(encoding="utf-8")
+
+
+def test_readme_badges_match_the_project() -> None:
+    """Static badges make claims; keep them true."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
+
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    dependencies = project["dependencies"]
+    assert len(dependencies) == 1 and dependencies[0].lower().startswith("pyyaml")
+    assert "runtime%20dependencies-1%20(PyYAML)" in readme
+
+    versions = [
+        c.rsplit(" :: ", 1)[1]
+        for c in project["classifiers"]
+        if c.startswith("Programming Language :: Python :: 3.")
+    ]
+    assert f"python-{versions[0]}--{versions[-1]}" in readme
+
+    assert (ROOT / ".github" / "workflows" / "security.yml").exists()
+    assert "actions/workflows/security.yml/badge.svg" in readme
+    assert (ROOT / "SECURITY.md").exists()
