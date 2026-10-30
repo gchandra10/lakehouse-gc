@@ -33,7 +33,7 @@ exclusions:
   - resource_type: example_asset
     pattern: "tmp_*"
     reason: "Temporary hold during migration"
-    expires_on: 2026-10-30        # inclusive; expired exclusions are ignored with a warning
+    expires_on: 2027-06-30        # inclusive; expired exclusions are ignored with a warning
 
 # Where metadata is read from. Default: system.information_schema and system.lakeflow.
 # If `system` is blocked: per_catalog, or your org's schema of views (e.g. governance.uc_meta).
@@ -43,14 +43,16 @@ sources:
   lakeflow: system.lakeflow
 
 # Settings for each scanner's checks: rules.uc for Unity Catalog, rules.jobs for Lakeflow
-# Jobs, rules.example for the demo. A section is used only when that scanner runs; every key is optional.
+# Jobs, rules.example for the demo. A section is used only when that scanner runs;
+# every key is optional.
 rules:
   uc:
     stale_table_days: 180         # no data written for this long -> stale
     min_table_size_gb: 10         # only flag stale tables at least this big (0 = any size)
     required_tags: ["cost_center"]
     require_comment: true
-    temp_name_patterns: ["tmp_*", "temp_*", "test_*", "scratch_*", "*_tmp", "*_bak", "*_backup", "*_old"]
+    temp_name_patterns: ["tmp_*", "temp_*", "test_*", "scratch_*",
+                         "*_tmp", "*_bak", "*_backup", "*_old"]
     check_empty_containers: true
     max_detail_queries: 200       # cap on DESCRIBE DETAIL calls for stale candidates
   jobs:
