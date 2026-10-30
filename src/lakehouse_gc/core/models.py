@@ -19,7 +19,11 @@ class Severity(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
-    CRITICAL = "critical"
+
+    @property
+    def level(self) -> int:
+        """Sortable rank: 3 high, 2 medium, 1 low, 0 info."""
+        return list(Severity).index(self)
 
 
 class Dimension(str, Enum):

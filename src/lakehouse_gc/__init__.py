@@ -9,7 +9,7 @@ from lakehouse_gc.rules import describe_rules, rules_dataframe, rules_text
 from lakehouse_gc.runner import run
 from lakehouse_gc.simple import check, define_scanner, fail, ok, unknown
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
 
 logging.getLogger("lakehouse_gc").addHandler(logging.NullHandler())
 

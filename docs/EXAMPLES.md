@@ -38,8 +38,17 @@ display(rules_dataframe(spark, POLICY_PATH, scanners=["uc"]))  # what will be ch
 
 result = run(POLICY_PATH, scanners=["uc"], spark=spark)
 print(result.summary())  # scores, grade, counts, limitations
-display(result.to_dataframe(spark))  # one row per finding
+display(result.to_dataframe(spark))  # one row per finding, most severe first
+
+# Optional: keep the results. Leave both empty to only display them.
+SAVE_TABLE = ""  # e.g. "main.governance.lakehouse_gc_findings" (each run appends)
+SAVE_JSON = ""  # e.g. "/Volumes/main/default/lakehouse_gc/run-1.json" (never overwritten)
+if SAVE_TABLE or SAVE_JSON:
+    print(result.save(spark, table=SAVE_TABLE or None, json_path=SAVE_JSON or None))
 ```
+
+`severity_level` (3 high, 2 medium, 1 low, 0 info) sorts numerically, and `run_id` and
+`run_time` tell saved runs apart.
 
 ### 2. Choose what to scan
 

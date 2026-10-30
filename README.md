@@ -44,7 +44,8 @@ display(rules_dataframe(spark, POLICY_PATH, scanners=["uc"]))  # what will be ch
 
 result = run(POLICY_PATH, scanners=["uc"], spark=spark)
 print(result.summary())  # scores, grade, counts
-display(result.to_dataframe(spark))  # one row per finding
+display(result.to_dataframe(spark))  # one row per finding, most severe first
+# Optional: result.save(spark, table="main.governance.findings") or json_path="/Volumes/..."
 ```
 
 Choose what to scan in `policy.yaml`:

@@ -420,7 +420,7 @@ def test_example_notebook_is_clean(path: Path) -> None:
         if cell["cell_type"] == "code":  # never commit outputs: they could leak workspace data
             assert cell["outputs"] == [] and cell["execution_count"] is None, path.name
     pip = [c for c in nb["cells"] if "".join(c["source"]).startswith("%pip install")]
-    assert len(pip) == 1 and "lakehouse_gc-0.2.2-py3-none-any.whl" in "".join(pip[0]["source"])
+    assert len(pip) == 1 and "lakehouse_gc-0.3.0-py3-none-any.whl" in "".join(pip[0]["source"])
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.stem)

@@ -35,19 +35,15 @@ exclusions:
     reason: "Temporary hold during migration"
     expires_on: 2026-10-30        # inclusive; expired exclusions are ignored with a warning
 
-# Where scanners read from. Leave this out to use the system tables. Run
-# check_access(spark, POLICY_PATH) to see what you can read.
+# Where metadata is read from. Default: system.information_schema.
+# If `system` is blocked: per_catalog, or your org's schema of views (e.g. governance.uc_meta).
+# Run check_access(spark, POLICY_PATH) to see what you can read.
 sources:
-  information_schema: system.information_schema   # or: per_catalog (each catalog's own
-                                                  #   information_schema), or a schema of
-                                                  #   your organization's views, e.g.
-                                                  #   governance.uc_meta
-  # Repoint a single view, and map renamed columns (logical name: your column):
-  # tables:
-  #   table: governance.uc_meta.all_tables
-  #   columns: {table_owner: owner_principal}
+  information_schema: system.information_schema
 
-rules:                            # one section per scanner; every key is optional
+# Settings for each scanner's checks: rules.uc for Unity Catalog, rules.example for
+# the demo. A section is used only when that scanner runs; every key is optional.
+rules:
   uc:
     stale_table_days: 180         # no data written for this long -> stale
     min_table_size_gb: 10         # only flag stale tables at least this big (0 = any size)
@@ -61,14 +57,12 @@ rules:                            # one section per scanner; every key is option
     require_owner: true
 
 scoring:
-  governance_weight: 0.5          # normalized against cost_weight
+  governance_weight: 0.5          # overall = blend of the two scores (0.8/0.2 favors governance)
   cost_weight: 0.5
-  unknown_penalty: 0.5            # penalty for checks with unavailable evidence, in (0, 1]
-  severity_weights: {info: 0, low: 1, medium: 3, high: 5, critical: 8}
+  unknown_penalty: 0.5            # an unknown check costs this share of a failure, in (0, 1]
+                                  #   0.5 half, 1.0 same as a failure (strictest)
+  severity_weights: {info: 0, low: 1, medium: 3, high: 5}
   grade_boundaries: {A: 90, B: 80, C: 70, D: 60, F: 0}
 
-actions:
-  mode: report_only               # the only supported mode
-  allow_delete: false             # must be false
-  allow_pause: false              # must be false
+actions:                          # lakehouse-gc is always report-only
   min_candidate_confidence: 70    # *_candidate below this (or unknown) becomes review

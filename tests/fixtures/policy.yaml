@@ -52,11 +52,8 @@ scoring:
   governance_weight: 0.5          # normalized against cost_weight
   cost_weight: 0.5
   unknown_penalty: 0.5            # penalty for checks with unavailable evidence, in (0, 1]
-  severity_weights: {info: 0, low: 1, medium: 3, high: 5, critical: 8}
+  severity_weights: {info: 0, low: 1, medium: 3, high: 5}
   grade_boundaries: {A: 90, B: 80, C: 70, D: 60, F: 0}
 
-actions:
-  mode: report_only               # the only supported mode
-  allow_delete: false             # must be false
-  allow_pause: false              # must be false
+actions:                          # lakehouse-gc is always report-only
   min_candidate_confidence: 70    # *_candidate below this (or unknown) becomes review

@@ -518,6 +518,6 @@ def test_summary_and_dataframe_helpers() -> None:
     assert "Savings: unknown" in text
     frame = result.to_dataframe(spark)
     assert len(frame.rows) == len(result.findings)
-    assert frame.schema.startswith("scanner STRING")
+    assert frame.schema.startswith("severity_level INT, severity STRING")
     row = dict(zip([c.split()[0] for c in frame.schema.split(", ")], frame.rows[0], strict=True))
     assert row["scanner"] == "uc"

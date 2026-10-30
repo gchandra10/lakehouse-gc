@@ -38,11 +38,13 @@ Ready-made notebooks (`.ipynb`, saved without outputs), from easy to advanced: s
 
 ## Safety guarantees
 
-- **Report-only.** The package cannot change resources. It has no SDK or network
-  dependencies, and `uc` and `check_access` only run `SELECT`, `SHOW CATALOGS`, and
-  `DESCRIBE DETAIL`. A policy with
-  `actions.mode` other than `report_only`, or with `allow_delete` or `allow_pause` set to
-  anything but `false`, is rejected.
+- **Report-only.** The package cannot change resources, and no setting can enable a
+  change. It has no SDK or network dependencies, and `uc` and `check_access` only run
+  `SELECT`, `SHOW CATALOGS`, and `DESCRIBE DETAIL`. The keys `actions.mode`,
+  `allow_delete`, and `allow_pause` were removed in 0.3.0; a policy that still has them is
+  rejected with a message to delete the line.
+- **Results are saved only where you say.** `result.save(...)` writes the findings to a
+  table or file you name, and nothing else. It never writes to a scanned resource.
 - **Recommendations are advisory.** `archive_candidate`, `pause_candidate`, and
   `delete_candidate` are lowered to `review` unless confidence is known and at least
   `actions.min_candidate_confidence` (default 70). The finding records `downgraded_from`.
@@ -201,11 +203,9 @@ scope:
 | Key | Default | Meaning |
 |---|---|---|
 | `scoring.governance_weight`, `scoring.cost_weight` | 0.5 / 0.5 | Weights of the two scores in the overall score (normalized) |
-| `scoring.unknown_penalty` | 0.5 | Cost of a check with unavailable evidence, in (0, 1] |
-| `scoring.severity_weights` | info 0, low 1, medium 3, high 5, critical 8 | Weight of each severity |
+| `scoring.unknown_penalty` | 0.5 | Share of a failure that an unknown check costs, in (0, 1]; 1.0 treats unknown as failed |
+| `scoring.severity_weights` | info 0, low 1, medium 3, high 5 | Weight of each severity |
 | `scoring.grade_boundaries` | A 90, B 80, C 70, D 60, F 0 | Minimum score for each grade (one must be 0) |
-| `actions.mode` | `report_only` | The only allowed value |
-| `actions.allow_delete`, `actions.allow_pause` | `false` | Must be `false` |
 | `actions.min_candidate_confidence` | 70 | `*_candidate` below this becomes `review` |
 
 ## Scoring
@@ -225,6 +225,11 @@ overall     = weighted mean of governance and cost (weights normalized)
 grade       = highest grade whose minimum <= overall
 ```
 
+**Example.** 10 checks of equal weight: 6 pass, 2 fail, 2 unknown. With
+`unknown_penalty` 0.5 the score is 100 − (2 + 2 × 0.5) × 10 = 70; with 0.8 it is 64; with
+1.0 it is 60, the same as if both unknowns had failed. With weights 0.8 / 0.2, overall =
+0.8 × governance + 0.2 × cost.
+
 - **Missing visibility is never rewarded.** Unknown checks always cost points, and
   `unknown_penalty: 0` is rejected. A dimension with nothing to check is `None`, not 100.
 - **Deterministic.** Inputs are sorted and arithmetic uses exact fractions. Only the
@@ -237,6 +242,26 @@ grade       = highest grade whose minimum <= overall
 - **Savings** are `None` unless a finding carries an estimate with stated assumptions and
   coverage. Estimates on the same resource are not added together. The built-in scanners
   produce no estimates yet.
+
+## Results: sorting and saving
+
+`result.to_dataframe(spark)` and `result.to_rows()` return one row per finding, most
+severe first. Columns: `severity_level` (3 high, 2 medium, 1 low, 0 info), `severity`,
+`scanner`, `resource_type`, `resource`, `rule`, `recommendation`, `confidence`, `reasons`,
+`downgraded_from`, `excluded_reason`, `run_id`, and `run_time`.
+
+`result.to_json()` returns the whole run (status, scores, limitations, warnings, errors,
+findings) as JSON text. Saving is optional and goes only where you say:
+
+```python
+result.save(spark, table="main.governance.lakehouse_gc_findings")  # append to Delta
+result.save(json_path="/Volumes/main/default/lakehouse_gc/run-1.json")  # new file
+```
+
+- A table must be `catalog.schema.table`. Each run appends its rows (created if missing),
+  so `run_id` and `run_time` give you history. You need `CREATE TABLE` or `MODIFY` there.
+- A JSON file is never overwritten; an existing path is an error. The folder must exist.
+- With neither argument, `save` raises a `ValueError` and nothing is written.
 
 ## Architecture
 
@@ -251,7 +276,8 @@ src/lakehouse_gc/
     registry.py   ScannerRegistry
     scoring.py    scores and deduction audit trail
     savings.py    savings summary (no double counting)
-    results.py    ScannerResult, RunResult (summary, to_rows, to_dataframe)
+    results.py    ScannerResult, RunResult (summary, to_rows, to_dataframe, save)
+    export.py     to_json and save: the only code that writes, and only results
     sql.py        read-only SqlClient protocol and Spark adapter
     sources.py    configurable sources, column probing, source reader
     log.py        structured logging helpers
@@ -359,12 +385,12 @@ workflow file.
 To release:
 
 ```bash
-# 1. set __version__ = "0.2.2" in src/lakehouse_gc/__init__.py, then:
-git commit -am "Release 0.2.2"
+# 1. set __version__ = "0.3.0" in src/lakehouse_gc/__init__.py, then:
+git commit -am "Release 0.3.0"
 git push
-git tag v0.2.2
-git push origin v0.2.2      # starts release.yml
+git tag v0.3.0
+git push origin v0.3.0      # starts release.yml
 ```
 
 If the tag and version don't match, the release fails before anything is published. Delete
-the tag (`git tag -d v0.2.2 && git push origin :v0.2.2`), fix the version, and tag again.
+the tag (`git tag -d v0.3.0 && git push origin :v0.3.0`), fix the version, and tag again.

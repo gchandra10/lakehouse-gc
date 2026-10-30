@@ -28,7 +28,6 @@ from lakehouse_gc.core.errors import (
 from lakehouse_gc.core.models import Dimension, Resource, Severity
 
 POLICY_VERSION = 1
-REPORT_ONLY = "report_only"
 
 DEFAULT_SEVERITY_WEIGHTS: Mapping[Severity, float] = MappingProxyType(
     {
@@ -36,7 +35,6 @@ DEFAULT_SEVERITY_WEIGHTS: Mapping[Severity, float] = MappingProxyType(
         Severity.LOW: 1,
         Severity.MEDIUM: 3,
         Severity.HIGH: 5,
-        Severity.CRITICAL: 8,
     }
 )
 DEFAULT_GRADE_BOUNDARIES: tuple[tuple[str, float], ...] = (
@@ -236,23 +234,12 @@ class ScoringConfig:
 
 @dataclass(frozen=True)
 class ActionsConfig:
-    """V1 is report-only. Any configuration that would permit mutation is rejected."""
+    """How recommendations are made. lakehouse-gc is always report-only; nothing here can
+    enable a change to a resource."""
 
-    mode: str = REPORT_ONLY
-    allow_delete: bool = False
-    allow_pause: bool = False
     min_candidate_confidence: int = DEFAULT_MIN_CANDIDATE_CONFIDENCE
 
     def __post_init__(self) -> None:
-        if self.mode != REPORT_ONLY:
-            raise PolicyValidationError(
-                "mode", f"only '{REPORT_ONLY}' is supported; lakehouse-gc never mutates resources"
-            )
-        for name in ("allow_delete", "allow_pause"):
-            if getattr(self, name) is not False:
-                raise PolicyValidationError(
-                    name, "must be false; lakehouse-gc is report-only and never mutates resources"
-                )
         value = self.min_candidate_confidence
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
             raise PolicyValidationError(
@@ -357,7 +344,8 @@ _EXCLUSION_KEYS = frozenset({"resource_type", "pattern", "reason", "expires_on"}
 _SCORING_KEYS = frozenset(
     {"governance_weight", "cost_weight", "unknown_penalty", "severity_weights", "grade_boundaries"}
 )
-_ACTIONS_KEYS = frozenset({"mode", "allow_delete", "allow_pause", "min_candidate_confidence"})
+_ACTIONS_KEYS = frozenset({"min_candidate_confidence"})
+_REMOVED_ACTIONS_KEYS = ("mode", "allow_delete", "allow_pause")  # removed in 0.3.0
 
 _T = TypeVar("_T")
 
@@ -424,12 +412,6 @@ def _number(value: Any, path: str) -> float:
     if not is_number(value):
         raise PolicyValidationError(path, f"expected a number, got {type_name(value)}")
     return float(value)
-
-
-def _bool(value: Any, path: str) -> bool:
-    if not isinstance(value, bool):
-        raise PolicyValidationError(path, f"expected a boolean, got {type_name(value)}")
-    return value
 
 
 def _int(value: Any, path: str) -> int:
@@ -506,6 +488,10 @@ def _parse_scoring(value: Any, path: str) -> ScoringConfig:
         valid = {severity.value for severity in Severity}
         weights = dict(DEFAULT_SEVERITY_WEIGHTS)
         for name, weight in raw.items():
+            if name == "critical":
+                raise PolicyValidationError(
+                    _join(weights_path, name), "was removed in 0.3.0; high is the top severity"
+                )
             if name not in valid:
                 raise PolicyValidationError(
                     _join(weights_path, name),
@@ -525,13 +511,14 @@ def _parse_scoring(value: Any, path: str) -> ScoringConfig:
 
 def _parse_actions(value: Any, path: str) -> ActionsConfig:
     data = _optional_mapping(value, path)
+    for key in _REMOVED_ACTIONS_KEYS:
+        if key in data:
+            raise PolicyValidationError(
+                _join(path, key),
+                "was removed in 0.3.0; lakehouse-gc is always report-only, so delete this line",
+            )
     _check_keys(data, _ACTIONS_KEYS, path)
     kwargs: dict[str, Any] = {}
-    if "mode" in data:
-        kwargs["mode"] = _str(data["mode"], _join(path, "mode"))
-    for key in ("allow_delete", "allow_pause"):
-        if key in data:
-            kwargs[key] = _bool(data[key], _join(path, key))
     if "min_candidate_confidence" in data:
         kwargs["min_candidate_confidence"] = _int(
             data["min_candidate_confidence"], _join(path, "min_candidate_confidence")
