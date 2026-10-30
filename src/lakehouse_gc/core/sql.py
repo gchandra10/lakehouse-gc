@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
 from lakehouse_gc.core.errors import LakehouseGCError
@@ -86,3 +87,15 @@ def table_columns(client: SqlClient, object_name: str) -> list[str]:
             break
         names.append(name)
     return names
+
+
+def utc_timestamp(value: object) -> datetime | None:
+    """Normalize Spark timestamps (naive values are UTC on Databricks drivers) or ISO text."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)

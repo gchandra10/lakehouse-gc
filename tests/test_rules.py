@@ -138,7 +138,7 @@ def test_wrong_resource_type_warns_instead_of_silently_doing_nothing() -> None:
     }
     warning = next(w for w in result.warnings if "never matches" in w)  # type: ignore[attr-defined]
     assert "'internal_tables'" in warning
-    assert "catalog, example_asset, schema, table" in warning
+    assert "catalog, example_asset, job, schema, table" in warning
     assert "never matches" in result.summary()  # type: ignore[attr-defined]
 
 

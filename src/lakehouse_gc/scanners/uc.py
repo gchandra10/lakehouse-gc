@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from fnmatch import fnmatchcase
 from typing import Any
 
@@ -50,7 +50,7 @@ from lakehouse_gc.core.sources import (
     SourceUnavailableError,
     describe_error,
 )
-from lakehouse_gc.core.sql import Row, SqlClient, quote_identifier
+from lakehouse_gc.core.sql import Row, SqlClient, quote_identifier, utc_timestamp
 
 DETAIL_SOURCE = "DESCRIBE DETAIL"
 NAME_SOURCE = "object name"
@@ -604,20 +604,8 @@ def _note_missing_columns(ctx: ScannerContext, source: ResolvedSource, result: S
             )
 
 
-def _timestamp(value: object) -> datetime | None:
-    """Normalize Spark timestamps (naive values are UTC on Databricks drivers) or ISO text."""
-    if isinstance(value, str):
-        try:
-            value = datetime.fromisoformat(value)
-        except ValueError:
-            return None
-    if not isinstance(value, datetime):
-        return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-
-
 def _iso(value: object) -> str | None:
-    parsed = _timestamp(value)
+    parsed = utc_timestamp(value)
     return parsed.isoformat() if parsed else None
 
 
@@ -821,7 +809,7 @@ def _evaluate_stale(
     rule_id = STALE_RULE.rule_id
     cutoff = now - timedelta(days=config.stale_table_days)
     altered_evidence = _required(resource, "last_altered")
-    altered = _timestamp(altered_evidence.value)
+    altered = utc_timestamp(altered_evidence.value)
     if altered is not None and altered > cutoff:
         return RuleEvaluation(
             resource.ref,
@@ -858,7 +846,7 @@ def _evaluate_stale(
     else:
         reason = "DESCRIBE DETAIL returned no modification time."
 
-    modified = _timestamp(detail.get("lastModified"))
+    modified = utc_timestamp(detail.get("lastModified"))
     size = detail.get("sizeInBytes")
     size = size if isinstance(size, int) and not isinstance(size, bool) else None
     if modified is None:

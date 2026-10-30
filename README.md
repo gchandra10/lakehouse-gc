@@ -16,6 +16,8 @@ governance gaps and cost waste. It explains every result, and it never changes a
   `policy.yaml`.
 - **Checks governance:** finds missing owners, missing descriptions, missing required tags,
   temporary-looking names, and empty catalogs or schemas.
+- **Checks Lakeflow Jobs:** finds jobs with no observed run and jobs whose every run has
+  failed for several days in a row.
 - **Checks cost:** finds large tables with no recent data writes.
 - **Scores your estate:** gives a Governance, Cost, and Overall score from 0 to 100, plus a
   grade, with an audit trail of what cost points.
@@ -44,7 +46,8 @@ display(rules_dataframe(spark, POLICY_PATH, scanners=["uc"]))  # what will be ch
 
 result = run(POLICY_PATH, scanners=["uc"], spark=spark)
 print(result.summary())  # scores, grade, counts
-display(result.to_dataframe(spark))  # one row per finding
+display(result.to_dataframe(spark))  # one row per finding, most severe first
+# Optional: result.save(spark, table="main.governance.findings") or json_path="/Volumes/..."
 ```
 
 Choose what to scan in `policy.yaml`:
@@ -94,7 +97,7 @@ Run 3f9c...: succeeded (uc)
 
 ## Learn more
 
-- **[Examples](docs/EXAMPLES.md):** eight notebooks from easy to advanced, covering
+- **[Examples](docs/EXAMPLES.md):** nine notebooks from easy to advanced, covering
   restricted access, custom checks, policy in code, and more.
 - **[Details](docs/DETAILS.md):** installation, rules, scoring, policy reference, and
   architecture.

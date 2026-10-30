@@ -14,8 +14,9 @@ and can follow the fix there.
 ## What the project does to stay secure
 
 - **Read-only by design.** The package only runs `SELECT`, `SHOW CATALOGS`, and
-  `DESCRIBE DETAIL`. Policies cannot enable deletes, pauses, or any other changes, and
-  tests guard against network, SDK, and process-spawning imports.
+  `DESCRIBE DETAIL`. No setting can enable deletes, pauses, or any other changes, and
+  tests guard against network, SDK, and process-spawning imports. Results are saved only
+  when you call `result.save(...)`, only to the table or file you name.
 - **Minimal dependencies.** One runtime dependency: [PyYAML](https://pypi.org/project/PyYAML/).
 - **Dependency audits.** [`pip-audit`](https://github.com/pypa/pip-audit), maintained by the
   Python Packaging Authority, checks every locked dependency (exact versions with hashes)
@@ -38,5 +39,5 @@ provenance attestation.
 sha256sum -c SHA256SUMS.txt
 
 # The wheel was built by this repository's release workflow (requires the GitHub CLI):
-gh attestation verify lakehouse_gc-0.2.2-py3-none-any.whl --repo gchandra10/lakehouse-gc
+gh attestation verify lakehouse_gc-0.4.0-py3-none-any.whl --repo gchandra10/lakehouse-gc
 ```

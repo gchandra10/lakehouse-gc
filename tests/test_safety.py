@@ -38,6 +38,19 @@ def test_no_network_sdk_or_process_imports() -> None:
             assert not root_match, f"{path.relative_to(SRC)} imports {name}"
 
 
+WRITE_APIS = ("saveAsTable", "insertInto", ".write", "write_text", "write_bytes", ".open(")
+
+
+def test_only_export_writes_and_only_results() -> None:
+    """Scanners and the framework never write; core/export.py saves results on request."""
+    for path in SRC.rglob("*.py"):
+        if path == SRC / "core" / "export.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        found = [api for api in WRITE_APIS if api in text]
+        assert not found, f"{path.relative_to(SRC)} uses {found}"
+
+
 def test_library_installs_only_null_handler() -> None:
     handlers = logging.getLogger("lakehouse_gc").handlers
     assert any(isinstance(h, logging.NullHandler) for h in handlers)
@@ -57,4 +70,4 @@ def test_json_formatter_includes_extra_fields() -> None:
 
 
 def test_version_exposed() -> None:
-    assert lakehouse_gc.__version__ == "0.2.2"
+    assert lakehouse_gc.__version__ == "0.4.0"

@@ -45,7 +45,7 @@ def test_example_policy_loads() -> None:
     assert policy.rules["uc"]["required_tags"] == ["cost_center"]
     assert policy.rules["example"] == {"idle_days": 30, "require_owner": True}
     assert policy.scoring.dimension_weights == {Dimension.GOVERNANCE: 0.5, Dimension.COST: 0.5}
-    assert policy.actions.mode == "report_only"
+    assert policy.actions.min_candidate_confidence == 70
     assert policy.source == str(EXAMPLE_POLICY)
 
 
@@ -90,11 +90,11 @@ def test_duplicate_keys_rejected() -> None:
         """
         policy_version: 1
         actions:
-          allow_delete: false
-          allow_delete: true
+          min_candidate_confidence: 70
+          min_candidate_confidence: 80
         """
     )
-    assert "duplicate key 'allow_delete'" in str(error)
+    assert "duplicate key 'min_candidate_confidence'" in str(error)
 
 
 def test_version_is_required() -> None:
@@ -139,9 +139,9 @@ def test_unknown_keys_report_path(text: str, path: str, hint: str) -> None:
     ("text", "path"),
     [
         ("policy_version: 1\nactions:\n  allow_delete: true\n", "actions.allow_delete"),
-        ("policy_version: 1\nactions:\n  allow_pause: true\n", "actions.allow_pause"),
-        ("policy_version: 1\nactions:\n  mode: enforce\n", "actions.mode"),
-        ("policy_version: 1\nactions:\n  allow_delete: 'no'\n", "actions.allow_delete"),
+        ("policy_version: 1\nactions:\n  allow_pause: false\n", "actions.allow_pause"),
+        ("policy_version: 1\nactions:\n  mode: report_only\n", "actions.mode"),
+        ("policy_version: 1\nactions:\n  enforce: true\n", "actions.enforce"),
         (
             "policy_version: 1\nactions:\n  min_candidate_confidence: 101\n",
             "actions.min_candidate_confidence",
@@ -150,6 +150,19 @@ def test_unknown_keys_report_path(text: str, path: str, hint: str) -> None:
 )
 def test_mutation_and_invalid_actions_rejected(text: str, path: str) -> None:
     assert _error(text).path == path
+
+
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        ("actions:\n  allow_delete: false\n", "actions.allow_delete"),
+        ("scoring:\n  severity_weights: {critical: 8}\n", "scoring.severity_weights.critical"),
+    ],
+)
+def test_keys_removed_in_0_3_0_explain_themselves(text: str, path: str) -> None:
+    error = _error("policy_version: 1\n" + text)
+    assert error.path == path
+    assert "removed in 0.3.0" in str(error)
 
 
 @pytest.mark.parametrize(
@@ -221,7 +234,7 @@ def test_exclusion_matching_and_expiry() -> None:
 
 def test_programmatic_configs_are_validated() -> None:
     with pytest.raises(PolicyValidationError):
-        ActionsConfig(allow_delete=True)
+        ActionsConfig(min_candidate_confidence=101)
     with pytest.raises(PolicyValidationError):
         ScoringConfig(unknown_penalty=0)
     with pytest.raises(UnsupportedPolicyVersionError):

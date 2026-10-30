@@ -130,11 +130,12 @@ def test_example_rules_are_configurable() -> None:
 
 def test_default_scanner_selection_runs_all_registered() -> None:
     result = run(EXAMPLE_POLICY, clock=fixed_clock)
-    assert result.scanners == ("example", "uc")
-    # no Spark locally: the uc scanner fails in isolation with a clear message
+    assert result.scanners == ("example", "jobs", "uc")
+    # no Spark locally: the uc and jobs scanners fail in isolation with a clear message
     assert result.status is RunStatus.PARTIAL
-    uc_error = result.scanner_result("uc").error
-    assert uc_error is not None and "spark" in uc_error.message.lower()
+    for name in ("uc", "jobs"):
+        error = result.scanner_result(name).error
+        assert error is not None and "spark" in error.message.lower()
     assert result.scanner_result("example").status is ScannerStatus.SUCCEEDED
 
 
@@ -403,7 +404,7 @@ def _notebook(path: Path) -> dict[str, Any]:
 
 def test_examples_are_numbered_by_level() -> None:
     names = [p.stem for p in EXAMPLES]
-    assert len(names) == 8
+    assert len(names) == 9
     levels = [name.split("_")[1] for name in names]
     assert levels == sorted(levels, key=["easy", "intermediate", "advanced"].index)
     assert not list((ROOT / "examples").glob("*.py"))  # notebooks only, one copy
@@ -420,11 +421,12 @@ def test_example_notebook_is_clean(path: Path) -> None:
         if cell["cell_type"] == "code":  # never commit outputs: they could leak workspace data
             assert cell["outputs"] == [] and cell["execution_count"] is None, path.name
     pip = [c for c in nb["cells"] if "".join(c["source"]).startswith("%pip install")]
-    assert len(pip) == 1 and "lakehouse_gc-0.2.2-py3-none-any.whl" in "".join(pip[0]["source"])
+    assert len(pip) == 1 and "lakehouse_gc-0.4.0-py3-none-any.whl" in "".join(pip[0]["source"])
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.stem)
 def test_example_notebook_runs_end_to_end(path: Path) -> None:
+    from test_jobs import sample_lakeflow
     from test_uc import FakeSpark, sample_workspace
 
     code = "\n".join(
@@ -433,7 +435,7 @@ def test_example_notebook_runs_end_to_end(path: Path) -> None:
         if cell["cell_type"] == "code"
     )
     code = code.replace("/Volumes/main/default/lakehouse_gc/policy.yaml", str(EXAMPLE_POLICY))
-    spark = FakeSpark(sample_workspace())
+    spark: Any = sample_lakeflow() if "lakeflow" in path.stem else FakeSpark(sample_workspace())
     shown: list[object] = []
     namespace = {"spark": spark, "display": shown.append, "__name__": "__main__"}
     exec(compile(code, path.name, "exec"), namespace)
@@ -441,6 +443,9 @@ def test_example_notebook_runs_end_to_end(path: Path) -> None:
     for value in namespace.values():
         if isinstance(value, RunResult):
             assert value.status is RunStatus.SUCCEEDED, (path.name, value.summary())
-    statements = spark.client.statements
+    if "lakeflow" in path.stem:  # the sample has one job of each kind
+        rules = {row["rule"] for row in namespace["flagged"]}
+        assert rules == {"jobs.never_run", "jobs.failing_streak"}
+    statements = spark.statements if "lakeflow" in path.stem else spark.client.statements
     assert statements
     assert all(s.startswith(("SELECT", "DESCRIBE", "SHOW CATALOGS")) for s in statements)

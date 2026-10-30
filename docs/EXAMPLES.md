@@ -1,6 +1,6 @@
 # Examples
 
-Eight ready-to-run notebooks (`.ipynb`), from easy to advanced. They render on GitHub, and
+Nine ready-to-run notebooks (`.ipynb`), from easy to advanced. They render on GitHub, and
 Databricks imports them directly. Import any file from
 [`examples/`](../examples) into your workspace, set the `/Volumes/...` paths in the first
 two cells, and run all. Each notebook stands on its own, and every one is run end to end
@@ -14,8 +14,9 @@ by the test suite.
 | 4 | Intermediate | [`04_intermediate_restricted_access.ipynb`](../examples/04_intermediate_restricted_access.ipynb) | No `system` access, `per_catalog`, your org's views |
 | 5 | Intermediate | [`05_intermediate_custom_checks.ipynb`](../examples/05_intermediate_custom_checks.ipynb) | Your own checks with `@check` and `define_scanner` |
 | 6 | Intermediate | [`06_intermediate_policy_in_code.ipynb`](../examples/06_intermediate_policy_in_code.ipynb) | Policy as Python objects; what-if runs |
-| 7 | Advanced | [`07_advanced_scanner_class.ipynb`](../examples/07_advanced_scanner_class.ipynb) | A full `Scanner` subclass |
-| 8 | Advanced | [`08_advanced_registry_errors_logging.ipynb`](../examples/08_advanced_registry_errors_logging.ipynb) | `run()` options, registry, errors, JSON logs |
+| 7 | Intermediate | [`07_intermediate_lakeflow_jobs.ipynb`](../examples/07_intermediate_lakeflow_jobs.ipynb) | Jobs with no observed run, jobs failing every day |
+| 8 | Advanced | [`08_advanced_scanner_class.ipynb`](../examples/08_advanced_scanner_class.ipynb) | A full `Scanner` subclass |
+| 9 | Advanced | [`09_advanced_registry_errors_logging.ipynb`](../examples/09_advanced_registry_errors_logging.ipynb) | `run()` options, registry, errors, JSON logs |
 
 The snippets below show the key idea from each notebook. They assume a notebook, where
 `spark` and `display` are available, and this policy path:
@@ -38,8 +39,17 @@ display(rules_dataframe(spark, POLICY_PATH, scanners=["uc"]))  # what will be ch
 
 result = run(POLICY_PATH, scanners=["uc"], spark=spark)
 print(result.summary())  # scores, grade, counts, limitations
-display(result.to_dataframe(spark))  # one row per finding
+display(result.to_dataframe(spark))  # one row per finding, most severe first
+
+# Optional: keep the results. Leave both empty to only display them.
+SAVE_TABLE = ""  # e.g. "main.governance.lakehouse_gc_findings" (each run appends)
+SAVE_JSON = ""  # e.g. "/Volumes/main/default/lakehouse_gc/run-1.json" (never overwritten)
+if SAVE_TABLE or SAVE_JSON:
+    print(result.save(spark, table=SAVE_TABLE or None, json_path=SAVE_JSON or None))
 ```
+
+`severity_level` (3 high, 2 medium, 1 low, 0 info) sorts numerically, and `run_id` and
+`run_time` tell saved runs apart.
 
 ### 2. Choose what to scan
 
@@ -153,17 +163,36 @@ policy = Policy(
 result = run(policy=policy, scanners=["uc"], spark=spark)
 ```
 
+### 7. Lakeflow jobs
+
+```python
+display(rules_dataframe(spark, POLICY_PATH, scanners=["jobs"]))
+result = run(POLICY_PATH, scanners=["uc", "jobs"], spark=spark)
+```
+
+```yaml
+rules:
+  jobs:
+    never_run_days: 30  # no run observed and at least this old
+    failing_days: 3  # every run failed on each of the last 3 days
+exclusions:
+  - resource_type: job
+    pattern: "adhoc_*"  # job name
+    reason: "Manual jobs"
+    expires_on: null
+```
+
 ---
 
 ## Advanced
 
-### 7. A scanner class
+### 8. A scanner class
 
 Subclass `Scanner` and implement `discover`, `analyze`, and `recommend` (`score` is
 inherited). Declare `rules` with `RuleSpec`, and optionally a typed `config_model`, your
 `resource_types`, and `sources`. See the notebook for a complete, working example.
 
-### 8. Registry, run options, errors, and logging
+### 9. Registry, run options, errors, and logging
 
 ```python
 from lakehouse_gc.core import PolicyValidationError, get_default_registry, loads_policy
