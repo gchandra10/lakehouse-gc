@@ -10,6 +10,22 @@
 **lakehouse-gc** is a read-only Python package that checks your Databricks lakehouse for
 governance gaps and cost waste. It explains every result, and it never changes anything.
 
+[![Unity Catalog scan results: one row per finding, sorted by severity, with recommendation, confidence, and reasons](docs/uc-scan-output.jpg)](docs/uc-scan-output.jpg)
+
+[![Lakeflow jobs scan results: jobs with no observed run flagged for review](docs/jobs-scan-output.jpg)](docs/jobs-scan-output.jpg)
+
+*Click an image to enlarge it.*
+
+**Questions?** See the [FAQ](docs/FAQ.md): short answers for data teams and for security
+and governance teams.
+
+## Learn more
+
+- **[Examples](docs/EXAMPLES.md):** nine notebooks from easy to advanced, covering
+  restricted access, custom checks, policy in code, and more.
+- **[Details](docs/DETAILS.md):** installation, rules, scoring, policy reference, and
+  architecture.
+
 ## What it does
 
 - **Scans Unity Catalog:** checks the catalogs, schemas, and tables you choose in a simple
@@ -94,13 +110,6 @@ Run 3f9c...: succeeded (uc)
   own scanners, and a signed build provenance attestation
   (`gh attestation verify <wheel> --repo gchandra10/lakehouse-gc`).
 - **Found a problem?** See [SECURITY.md](SECURITY.md) to report it privately.
-
-## Learn more
-
-- **[Examples](docs/EXAMPLES.md):** nine notebooks from easy to advanced, covering
-  restricted access, custom checks, policy in code, and more.
-- **[Details](docs/DETAILS.md):** installation, rules, scoring, policy reference, and
-  architecture.
 
 ## License
 

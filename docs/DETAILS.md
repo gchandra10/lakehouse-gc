@@ -207,7 +207,7 @@ How evidence limits are reported:
   registered is an error, to catch typos. Only add `rules.<name>` for a custom scanner
   to a policy that always runs with that scanner, or rely on its `config` defaults.
 - Policies can also be built in code (`Policy(...)`) with the same validation. See
-  [Examples §8](EXAMPLES.md#8-build-the-policy-in-code).
+  [Examples §6](EXAMPLES.md#6-policy-in-code).
 
 ### Scope
 
@@ -364,8 +364,8 @@ the same way an exception does.
 
 ## Writing scanners: guidelines
 
-- Use [`@check` / `define_scanner`](EXAMPLES.md#6-add-your-own-checks) for most needs, and
-  [subclass `Scanner`](EXAMPLES.md#7-advanced-subclass-scanner) for full control.
+- Use [`@check` / `define_scanner`](EXAMPLES.md#5-your-own-checks) for most needs, and
+  [subclass `Scanner`](EXAMPLES.md#8-a-scanner-class) for full control.
 - Never modify resources; use read-only access only.
 - When a signal can't be obtained, report it as unknown (`None` / `unknown()`, or
   `EvidenceStatus.UNAVAILABLE` with `Outcome.INDETERMINATE`). Never guess timestamps,
@@ -382,7 +382,7 @@ the same way an exception does.
 The library logs through the standard `lakehouse_gc` logger and never configures the root
 logger. Records carry structured fields (`event`, `run_id`, `scanner`, `phase`,
 `status`, ...). `lakehouse_gc.core.log.JsonFormatter` writes them as JSON lines; see
-[Examples §9](EXAMPLES.md#9-registry-errors-and-logging).
+[Examples §9](EXAMPLES.md#9-registry-run-options-errors-and-logging).
 
 ## Development
 
