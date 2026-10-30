@@ -428,12 +428,12 @@ workflow file.
 To release:
 
 ```bash
-# 1. set __version__ = "0.3.0" in src/lakehouse_gc/__init__.py, then:
-git commit -am "Release 0.3.0"
+# 1. set __version__ = "0.4.0" in src/lakehouse_gc/__init__.py, then:
+git commit -am "Release 0.4.0"
 git push
-git tag v0.3.0
-git push origin v0.3.0      # starts release.yml
+git tag v0.4.0
+git push origin v0.4.0      # starts release.yml
 ```
 
 If the tag and version don't match, the release fails before anything is published. Delete
-the tag (`git tag -d v0.3.0 && git push origin :v0.3.0`), fix the version, and tag again.
+the tag (`git tag -d v0.4.0 && git push origin :v0.4.0`), fix the version, and tag again.

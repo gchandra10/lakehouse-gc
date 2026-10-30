@@ -39,5 +39,5 @@ provenance attestation.
 sha256sum -c SHA256SUMS.txt
 
 # The wheel was built by this repository's release workflow (requires the GitHub CLI):
-gh attestation verify lakehouse_gc-0.3.0-py3-none-any.whl --repo gchandra10/lakehouse-gc
+gh attestation verify lakehouse_gc-0.4.0-py3-none-any.whl --repo gchandra10/lakehouse-gc
 ```
