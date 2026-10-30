@@ -14,7 +14,7 @@ scope:
 
 # Excluded resources are not analyzed but stay visible as "excluded" findings.
 exclusions:
-  - resource_type: table    # must match a scanner's type: catalog, schema, table (uc)
+  - resource_type: table    # catalog, schema, table (uc); job (jobs)
     pattern: "main.finance.*"  # case-insensitive glob on the full name
     reason: "Retention policy"
     expires_on: null
@@ -35,14 +35,15 @@ exclusions:
     reason: "Temporary hold during migration"
     expires_on: 2026-10-30        # inclusive; expired exclusions are ignored with a warning
 
-# Where metadata is read from. Default: system.information_schema.
+# Where metadata is read from. Default: system.information_schema and system.lakeflow.
 # If `system` is blocked: per_catalog, or your org's schema of views (e.g. governance.uc_meta).
 # Run check_access(spark, POLICY_PATH) to see what you can read.
 sources:
   information_schema: system.information_schema
+  lakeflow: system.lakeflow
 
-# Settings for each scanner's checks: rules.uc for Unity Catalog, rules.example for
-# the demo. A section is used only when that scanner runs; every key is optional.
+# Settings for each scanner's checks: rules.uc for Unity Catalog, rules.jobs for Lakeflow
+# Jobs, rules.example for the demo. A section is used only when that scanner runs; every key is optional.
 rules:
   uc:
     stale_table_days: 180         # no data written for this long -> stale
@@ -52,6 +53,11 @@ rules:
     temp_name_patterns: ["tmp_*", "temp_*", "test_*", "scratch_*", "*_tmp", "*_bak", "*_backup", "*_old"]
     check_empty_containers: true
     max_detail_queries: 200       # cap on DESCRIBE DETAIL calls for stale candidates
+  jobs:
+    never_run_days: 30            # no run observed and at least this old -> review
+    failing_days: 3               # every run failed on each of the last N days -> review
+    failure_states: ["FAILED", "ERROR", "TIMED_OUT"]
+    workspace_ids: []             # empty = every workspace the system tables show
   example:                        # built-in demo scanner (mock data)
     idle_days: 30
     require_owner: true

@@ -39,7 +39,7 @@ Ready-made notebooks (`.ipynb`, saved without outputs), from easy to advanced: s
 ## Safety guarantees
 
 - **Report-only.** The package cannot change resources, and no setting can enable a
-  change. It has no SDK or network dependencies, and `uc` and `check_access` only run
+  change. It has no SDK or network dependencies, and the scanners and `check_access` only run
   `SELECT`, `SHOW CATALOGS`, and `DESCRIBE DETAIL`. The keys `actions.mode`,
   `allow_delete`, and `allow_pause` were removed in 0.3.0; a policy that still has them is
   rejected with a message to delete the line.
@@ -153,6 +153,48 @@ How evidence limits are reported:
   (`unknown_penalty`) and is listed in `limitations`. If catalogs, schemas, or tables can't
   be listed, `uc` fails with the reason, and other scanners still run.
 - **Naming is a heuristic,** so temporary-looking names are inferred evidence.
+
+## Lakeflow Jobs scanner (`jobs`)
+
+The scanner reads `system.lakeflow.jobs` and `system.lakeflow.job_run_timeline`, or your
+organization's views (`sources: {lakeflow: governance.lakeflow}` for a schema with views
+of the same names, or `jobs:` / `job_run_timeline:` for single views and renamed
+columns). Its resource type is `job`, so exclusions use `resource_type: job` and match the
+job name. Each job appears as `name (workspace_id/job_id)`.
+
+| Rule | Severity | Fails when | On fail |
+|---|---|---|---|
+| `jobs.never_run` | medium | the job is at least `never_run_days` old and no run is observed | review |
+| `jobs.failing_streak` | high | each of the last `failing_days` days (UTC) had finished runs, and every one ended in `failure_states` | review |
+
+`rules.jobs` settings (all optional):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `never_run_days` | 30 | Minimum job age before "no run observed" is flagged |
+| `failing_days` | 3 | Days in a row of only failed runs before flagging (1–90) |
+| `failure_states` | `FAILED`, `ERROR`, `TIMED_OUT` | `result_state` values that count as a failure |
+| `workspace_ids` | `[]` | Limit to these workspaces; empty = every workspace the tables show |
+
+| Source | Default object | Columns | If unavailable |
+|---|---|---|---|
+| `jobs` | `system.lakeflow.jobs` | **workspace_id**, **job_id**, **change_time**, name, creator_user_name, creator_id, create_time, delete_time, paused | `jobs` cannot run |
+| `job_run_timeline` | `system.lakeflow.job_run_timeline` | **workspace_id**, **job_id**, **period_start_time**, period_end_time [failing_streak], result_state [failing_streak] | both rules unknown |
+
+How evidence limits are reported:
+
+- **"No run observed", not "never ran".** The timeline keeps about a year, so an older run
+  would not show. The finding names the date it looked back to.
+- **Job age.** `create_time` is only filled for rows from late November 2025 on. Without
+  it, age comes from the earliest recorded change: inferred, shown as "about N days", and
+  possibly younger than the real job.
+- **The latest row describes a job.** `jobs` has one row per change; jobs with a
+  `delete_time` are skipped.
+- **Streak rules.** A day with no finished run, a success, or another result such as
+  `CANCELLED` or `SKIPPED` ends the streak. Today counts once it has a finished run;
+  otherwise the streak is counted from yesterday.
+- **Other workspaces.** The system tables can include every workspace in the account; use
+  `workspace_ids` to limit the scan.
 
 ## Policy reference
 
@@ -284,6 +326,7 @@ src/lakehouse_gc/
   scanners/
     example.py    mock-data demo scanner
     uc.py         Unity Catalog scanner
+    jobs.py       Lakeflow Jobs scanner
   simple.py       check / define_scanner (function-based scanners)
   access.py       check_access
   rules.py        describe_rules, rules_dataframe, rules_text

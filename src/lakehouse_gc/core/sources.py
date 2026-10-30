@@ -152,15 +152,9 @@ class SourceReader:
                 (required if column.required else optional).append(column.name)
         return required, optional
 
-    def read(
-        self,
-        source: ResolvedSource,
-        *,
-        catalog: str | None = None,
-        where: Mapping[str, str] | None = None,
-        params: Mapping[str, Any] | None = None,
-    ) -> SourceRows:
-        object_name = source.object_for(catalog)
+    def select(self, source: ResolvedSource, object_name: str) -> tuple[str, tuple[str, ...]]:
+        """``SELECT <actual> AS <logical>, ... FROM <object>`` and the optional logical
+        columns that are missing (selected as NULL). Raises if a required one is missing."""
         missing_required, missing_optional = self.missing(source, object_name)
         if missing_required:
             raise SourceUnavailableError(
@@ -176,6 +170,18 @@ class SourceReader:
             for c in source.spec.columns
         ]
         statement = f"SELECT {', '.join(items)} FROM {quote_identifier(*object_name.split('.'))}"
+        return statement, tuple(missing_optional)
+
+    def read(
+        self,
+        source: ResolvedSource,
+        *,
+        catalog: str | None = None,
+        where: Mapping[str, str] | None = None,
+        params: Mapping[str, Any] | None = None,
+    ) -> SourceRows:
+        object_name = source.object_for(catalog)
+        statement, missing_optional = self.select(source, object_name)
         if where:
             statement += " WHERE " + " AND ".join(
                 f"{quote_identifier(source.actual(column))} = :{param}"
@@ -185,7 +191,7 @@ class SourceReader:
             rows = self.sql.query(statement, params)
         except Exception as exc:
             raise SourceUnavailableError(source.name, object_name, describe_error(exc)) from exc
-        return SourceRows(rows, object_name, tuple(missing_optional))
+        return SourceRows(rows, object_name, missing_optional)
 
 
 # --- resolution from policy -------------------------------------------------------------
